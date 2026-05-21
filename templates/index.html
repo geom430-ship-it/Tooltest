@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PentestKit v1.0 – Web Security Tool</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+<style>
+/* === GLOBAL RESET & THEME === */
+:root {
+  --bg: #0a0e1a;
+  --bg2: #111827;
+  --bg3: #1a2035;
+  --bg4: #1e2a3a;
+  --border: #2d3748;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #00d4ff;
+  --accent2: #7c3aed;
+  --green: #10b981;
+  --red: #ef4444;
+  --orange: #f59e0b;
+  --yellow: #fcd34d;
+  --pink: #ec4899;
+  --radius: 10px;
+  --shadow: 0 4px 20px rgba(0,0,0,0.4);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);overflow:hidden}
+
+/* === LAYOUT === */
+.app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:240px;min-width:240px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+.workspace{flex:1;display:flex;overflow:hidden}
+.panel-left{flex:1;display:flex;flex-direction:column;overflow:hidden;border-right:1px solid var(--border)}
+.panel-right{width:420px;display:flex;flex-direction:column;background:var(--bg2);overflow:hidden}
+
+/* === SIDEBAR === */
+.brand{padding:16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px}
+.brand-icon{font-size:1.6rem}
+.brand-text{font-size:1.1rem;font-weight:700;color:var(--accent);letter-spacing:1px}
+.brand-sub{font-size:0.65rem;color:var(--muted);letter-spacing:2px}
+.nav-section{padding:8px 12px 4px;font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-top:4px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:8px 14px;cursor:pointer;border-radius:6px;margin:1px 8px;transition:all 0.15s;font-size:0.875rem;color:var(--muted);position:relative}
+.nav-item:hover{background:var(--bg3);color:var(--text)}
+.nav-item.active{background:rgba(0,212,255,0.1);color:var(--accent);border-left:2px solid var(--accent)}
+.nav-item .icon{width:18px;text-align:center;font-size:1rem}
+.nav-item .badge{margin-left:auto;font-size:0.65rem;background:var(--accent);color:#000;padding:1px 6px;border-radius:10px;font-weight:700}
+.sidebar-footer{margin-top:auto;padding:12px;border-top:1px solid var(--border)}
+.sidebar-footer p{font-size:0.7rem;color:var(--muted);text-align:center}
+
+/* === TOOLBAR === */
+.target-input{flex:1;max-width:500px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:6px 12px;color:var(--text);font-size:0.875rem;outline:none;transition:border 0.15s}
+.target-input:focus{border-color:var(--accent)}
+.target-input::placeholder{color:var(--muted)}
+.btn{padding:6px 14px;border-radius:6px;border:none;cursor:pointer;font-size:0.8rem;font-weight:600;letter-spacing:0.5px;transition:all 0.15s;display:inline-flex;align-items:center;gap:6px}
+.btn-primary{background:var(--accent);color:#000}
+.btn-primary:hover{background:#00b8d9;transform:translateY(-1px)}
+.btn-danger{background:var(--red);color:#fff}
+.btn-danger:hover{background:#dc2626}
+.btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{background:var(--bg4)}
+.btn-sm{padding:4px 10px;font-size:0.75rem}
+.btn-success{background:var(--green);color:#fff}
+.btn-warning{background:var(--orange);color:#000}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green)}
+.status-dot.scanning{animation:pulse 1s infinite;background:var(--orange)}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 6px var(--orange)}50%{opacity:0.5;box-shadow:0 0 12px var(--orange)}}
+
+/* === MODULE PANELS === */
+.module-panel{display:none;flex:1;overflow-y:auto;padding:16px}
+.module-panel.active{display:block}
+.module-title{font-size:1.2rem;font-weight:700;color:var(--accent);margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-label{font-size:0.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.form-control{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-size:0.875rem;outline:none;transition:border 0.15s;width:100%}
+.form-control:focus{border-color:var(--accent)}
+.form-control option{background:var(--bg2)}
+.form-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.card{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.card-title{font-size:0.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+
+/* === TERMINAL / OUTPUT === */
+.terminal-header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
+.terminal-title{font-size:0.8rem;color:var(--muted);font-family:monospace;display:flex;align-items:center;gap:6px}
+.terminal-actions{display:flex;gap:6px}
+.terminal{flex:1;overflow-y:auto;background:#050810;font-family:'Fira Code','Cascadia Code','Consolas',monospace;font-size:0.8rem;padding:12px;line-height:1.7}
+.terminal::-webkit-scrollbar{width:4px}
+.terminal::-webkit-scrollbar-thumb{background:var(--border)}
+.log-line{padding:1px 0;display:flex;align-items:flex-start;gap:8px;word-break:break-all}
+.log-time{color:#4a5568;font-size:0.7rem;flex-shrink:0;margin-top:2px}
+.log-msg{flex:1}
+.log-info{color:#94a3b8}
+.log-found{color:#10b981}
+.log-warn{color:#f59e0b}
+.log-vuln{color:#ef4444;font-weight:600}
+.log-ok{color:#34d399}
+.log-error{color:#fc8181}
+.log-complete{color:var(--accent);font-weight:600}
+.log-progress{color:#60a5fa}
+.log-done{color:var(--accent);border-top:1px solid var(--border);padding-top:6px;margin-top:4px}
+
+/* === RIGHT PANEL === */
+.results-header{padding:12px 14px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:0.85rem;font-weight:600;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.results-body{flex:1;overflow-y:auto;padding:12px}
+.result-card{background:var(--bg3);border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden}
+.result-card-header{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;cursor:pointer;background:var(--bg4)}
+.result-card-body{padding:10px 12px;display:none}
+.result-card.expanded .result-card-body{display:block}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+.tag-open{background:rgba(16,185,129,0.2);color:#10b981;border:1px solid rgba(16,185,129,0.4)}
+.tag-closed{background:rgba(100,100,100,0.2);color:#6b7280;border:1px solid #374151}
+.tag-vuln{background:rgba(239,68,68,0.2);color:#ef4444;border:1px solid rgba(239,68,68,0.4)}
+.tag-warn{background:rgba(245,158,11,0.2);color:#f59e0b;border:1px solid rgba(245,158,11,0.4)}
+.tag-ok{background:rgba(16,185,129,0.2);color:#10b981;border:1px solid rgba(16,185,129,0.4)}
+.tag-info{background:rgba(0,212,255,0.1);color:var(--accent);border:1px solid rgba(0,212,255,0.2)}
+.tag-critical{background:rgba(239,68,68,0.3);color:#ff6b6b;border:1px solid #ef4444}
+.tag-high{background:rgba(249,115,22,0.2);color:#fb923c;border:1px solid rgba(249,115,22,0.4)}
+.tag-medium{background:rgba(234,179,8,0.2);color:#facc15;border:1px solid rgba(234,179,8,0.4)}
+.tag-low{background:rgba(16,185,129,0.15);color:#4ade80;border:1px solid rgba(16,185,129,0.3)}
+
+/* === STATS === */
+.stats-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.stat-box{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 14px;text-align:center;flex:1;min-width:70px}
+.stat-num{font-size:1.5rem;font-weight:700;display:block}
+.stat-label{font-size:0.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.stat-num.red{color:var(--red)}
+.stat-num.green{color:var(--green)}
+.stat-num.orange{color:var(--orange)}
+.stat-num.accent{color:var(--accent)}
+
+/* === SCROLLBARS === */
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+/* === PROGRESS BAR === */
+.progress-bar-wrap{background:var(--bg);border-radius:4px;height:4px;overflow:hidden;margin:6px 0}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width 0.3s;border-radius:4px}
+
+/* === HASH TOOLS === */
+.hash-output{background:#050810;border:1px solid var(--border);border-radius:6px;padding:10px;font-family:monospace;font-size:0.8rem;word-break:break-all;color:var(--green);min-height:40px}
+.pwd-meter{height:8px;border-radius:4px;background:var(--bg);margin:8px 0;transition:all 0.3s}
+
+/* === DORKS === */
+.dork-item{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.dork-query{font-family:monospace;font-size:0.75rem;flex:1;color:var(--text);word-break:break-all}
+.dork-cat{font-size:0.65rem;color:var(--muted);text-transform:uppercase;flex-shrink:0}
+
+/* === TOOLTIP === */
+[title]{cursor:help}
+
+/* === RESPONSIVE === */
+@media(max-width:900px){.sidebar{width:50px}.brand-text,.brand-sub,.nav-item span:not(.icon){display:none}.nav-section{display:none}.panel-right{width:300px}}
+
+/* === ANIMATIONS === */
+.fade-in{animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
+.glow{box-shadow:0 0 15px rgba(0,212,255,0.15)}
+.divider{height:1px;background:var(--border);margin:12px 0}
+
+/* Tab system */
+.tabs{display:flex;gap:2px;padding:0 16px;background:var(--bg2);border-bottom:1px solid var(--border);overflow-x:auto;flex-shrink:0}
+.tab{padding:10px 16px;font-size:0.8rem;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap;transition:all 0.15s}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-content{display:none;flex:1;overflow:auto}
+.tab-content.active{display:block}
+
+/* Report */
+.report-preview{background:#050810;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:0.75rem;color:var(--muted);max-height:200px;overflow-y:auto;font-family:monospace}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- SIDEBAR -->
+<div class="sidebar">
+  <div class="brand">
+    <span class="brand-icon">🛡️</span>
+    <div>
+      <div class="brand-text">PentestKit</div>
+      <div class="brand-sub">v1.0 SECURITY</div>
+    </div>
+  </div>
+
+  <div style="overflow-y:auto;flex:1">
+    <div class="nav-section">Network</div>
+    <div class="nav-item active" onclick="showModule('portscan')" id="nav-portscan">
+      <span class="icon">🔍</span><span>Port Scanner</span>
+    </div>
+    <div class="nav-item" onclick="showModule('ping')" id="nav-ping">
+      <span class="icon">📡</span><span>Ping / Trace</span>
+    </div>
+    <div class="nav-item" onclick="showModule('banner')" id="nav-banner">
+      <span class="icon">🎯</span><span>Banner Grab</span>
+    </div>
+    <div class="nav-item" onclick="showModule('firewall')" id="nav-firewall">
+      <span class="icon">🔥</span><span>Firewall Detect</span>
+    </div>
+
+    <div class="nav-section">Recon</div>
+    <div class="nav-item" onclick="showModule('dns')" id="nav-dns">
+      <span class="icon">🌐</span><span>DNS Enum</span>
+    </div>
+    <div class="nav-item" onclick="showModule('whois')" id="nav-whois">
+      <span class="icon">📋</span><span>WHOIS / GeoIP</span>
+    </div>
+    <div class="nav-item" onclick="showModule('dorks')" id="nav-dorks">
+      <span class="icon">🔎</span><span>Google Dorks</span>
+    </div>
+
+    <div class="nav-section">Web Security</div>
+    <div class="nav-item" onclick="showModule('http')" id="nav-http">
+      <span class="icon">🌍</span><span>HTTP Analyzer</span>
+    </div>
+    <div class="nav-item" onclick="showModule('ssl')" id="nav-ssl">
+      <span class="icon">🔒</span><span>SSL/TLS Scan</span>
+    </div>
+    <div class="nav-item" onclick="showModule('dirs')" id="nav-dirs">
+      <span class="icon">📂</span><span>Dir Scanner</span>
+    </div>
+
+    <div class="nav-section">Vulnerabilities</div>
+    <div class="nav-item" onclick="showModule('sqli')" id="nav-sqli">
+      <span class="icon">💉</span><span>SQLi Tester</span>
+    </div>
+    <div class="nav-item" onclick="showModule('xss')" id="nav-xss">
+      <span class="icon">🎭</span><span>XSS Tester</span>
+    </div>
+    <div class="nav-item" onclick="showModule('lfi')" id="nav-lfi">
+      <span class="icon">📁</span><span>LFI Tester</span>
+    </div>
+    <div class="nav-item" onclick="showModule('misconfig')" id="nav-misconfig">
+      <span class="icon">⚙️</span><span>Misconfigs</span>
+    </div>
+
+    <div class="nav-section">Database</div>
+    <div class="nav-item" onclick="showModule('db')" id="nav-db">
+      <span class="icon">🗄️</span><span>DB Extractor</span><span class="badge">NEW</span>
+    </div>
+
+    <div class="nav-section">Tools</div>
+    <div class="nav-item" onclick="showModule('hash')" id="nav-hash">
+      <span class="icon">🔑</span><span>Hash Tools</span>
+    </div>
+    <div class="nav-item" onclick="showModule('report')" id="nav-report">
+      <span class="icon">📊</span><span>Reports</span>
+    </div>
+  </div>
+
+  <div class="sidebar-footer">
+    <p>⚠️ Authorized use only</p>
+  </div>
+</div>
+
+<!-- MAIN CONTENT -->
+<div class="main">
+
+  <!-- TOOLBAR -->
+  <div class="toolbar">
+    <span style="font-size:0.75rem;color:var(--muted)">TARGET</span>
+    <input type="text" id="global-target" class="target-input" placeholder="Enter target: domain.com / IP / https://..." />
+    <button class="btn btn-primary" onclick="runCurrentModule()">▶ RUN</button>
+    <button class="btn btn-danger btn-sm" onclick="stopScan()">■ STOP</button>
+    <div class="status-dot" id="status-dot"></div>
+    <span id="status-text" style="font-size:0.75rem;color:var(--muted)">Ready</span>
+    <div style="margin-left:auto;display:flex;gap:6px">
+      <button class="btn btn-ghost btn-sm" onclick="clearTerminal()">🗑 Clear</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportLogs()">💾 Export</button>
+    </div>
+  </div>
+
+  <div class="workspace">
+
+    <!-- LEFT PANEL: Module Settings -->
+    <div class="panel-left">
+
+      <!-- PORT SCANNER -->
+      <div id="module-portscan" class="module-panel active">
+        <div class="module-title">🔍 Port Scanner</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Scan Type</label>
+            <select id="ps-type" class="form-control">
+              <option value="common">Common Ports (~150)</option>
+              <option value="full">Full Scan (1-65535)</option>
+              <option value="custom">Custom Ports</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Threads</label>
+            <input type="number" id="ps-threads" class="form-control" value="100" min="1" max="500">
+          </div>
+          <div class="form-group" id="ps-custom-wrap" style="display:none">
+            <label class="form-label">Custom Ports (e.g. 80,443,8080-8090)</label>
+            <input type="text" id="ps-custom" class="form-control" placeholder="80,443,8080-8090">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="runPortScan()">▶ Start Scan</button>
+          <button class="btn btn-ghost btn-sm" onclick="setTarget('scanme.nmap.org')">Try Demo Target</button>
+        </div>
+        <div class="divider"></div>
+        <div class="card">
+          <div class="card-title">ℹ️ About</div>
+          <p style="font-size:0.8rem;color:var(--muted)">TCP port scanner with banner grabbing and service detection. Identifies open ports and categorizes risk levels.</p>
+        </div>
+      </div>
+
+      <!-- PING / TRACEROUTE -->
+      <div id="module-ping" class="module-panel">
+        <div class="module-title">📡 Ping & Traceroute</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchTab(this,'ping-tab')">Ping</div>
+          <div class="tab" onclick="switchTab(this,'trace-tab')">Traceroute</div>
+          <div class="tab" onclick="switchTab(this,'nslookup-tab')">NSLookup</div>
+        </div>
+        <div id="ping-tab" class="tab-content active" style="padding:16px">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Packet Count</label>
+              <input type="number" id="ping-count" class="form-control" value="4" min="1" max="20">
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="runPing()">▶ Ping</button>
+        </div>
+        <div id="trace-tab" class="tab-content" style="padding:16px">
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Traces the route packets take to reach the target.</p>
+          <button class="btn btn-primary" onclick="runTraceroute()">▶ Traceroute</button>
+        </div>
+        <div id="nslookup-tab" class="tab-content" style="padding:16px">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Record Type</label>
+              <select id="nsl-type" class="form-control">
+                <option>A</option><option>AAAA</option><option>MX</option>
+                <option>NS</option><option>TXT</option><option>CNAME</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="runNslookup()">▶ Lookup</button>
+        </div>
+      </div>
+
+      <!-- BANNER GRAB -->
+      <div id="module-banner" class="module-panel">
+        <div class="module-title">🎯 Banner Grabbing</div>
+        <div class="form-group" style="margin-bottom:12px">
+          <label class="form-label">Ports (comma separated)</label>
+          <input type="text" id="banner-ports" class="form-control" value="21,22,25,80,110,143,443,3306,8080">
+        </div>
+        <button class="btn btn-primary" onclick="runBanner()">▶ Grab Banners</button>
+        <div class="divider"></div>
+        <div class="card">
+          <div class="card-title">ℹ️ About</div>
+          <p style="font-size:0.8rem;color:var(--muted)">Connects to ports and captures service banners. Reveals software versions and configuration info.</p>
+        </div>
+      </div>
+
+      <!-- FIREWALL -->
+      <div id="module-firewall" class="module-panel">
+        <div class="module-title">🔥 Firewall Detection</div>
+        <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Detects firewall presence by analyzing port filtering behavior.</p>
+        <button class="btn btn-primary" onclick="runFirewall()">▶ Detect Firewall</button>
+      </div>
+
+      <!-- DNS ENUM -->
+      <div id="module-dns" class="module-panel">
+        <div class="module-title">🌐 DNS Enumeration</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchTab(this,'dns-records-tab')">Records</div>
+          <div class="tab" onclick="switchTab(this,'dns-sub-tab')">Subdomains</div>
+          <div class="tab" onclick="switchTab(this,'dns-reverse-tab')">Reverse DNS</div>
+        </div>
+        <div id="dns-records-tab" class="tab-content active" style="padding:16px">
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Enumerates all DNS record types: A, AAAA, MX, NS, TXT, CNAME, SOA, SRV, CAA</p>
+          <button class="btn btn-primary" onclick="runDns('records')">▶ Enumerate Records</button>
+        </div>
+        <div id="dns-sub-tab" class="tab-content" style="padding:16px">
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Brute-force subdomains using a built-in wordlist (~150 subdomains)</p>
+          <button class="btn btn-primary" onclick="runDns('subdomains')">▶ Brute-force Subdomains</button>
+        </div>
+        <div id="dns-reverse-tab" class="tab-content" style="padding:16px">
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">PTR record lookup for an IP address</p>
+          <button class="btn btn-primary" onclick="runDns('reverse')">▶ Reverse Lookup</button>
+        </div>
+      </div>
+
+      <!-- WHOIS -->
+      <div id="module-whois" class="module-panel">
+        <div class="module-title">📋 WHOIS & GeoIP</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchTab(this,'whois-tab')">WHOIS</div>
+          <div class="tab" onclick="switchTab(this,'geoip-tab')">GeoIP</div>
+        </div>
+        <div id="whois-tab" class="tab-content active" style="padding:16px">
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Domain registration information, registrar, expiry date, name servers.</p>
+          <button class="btn btn-primary" onclick="runWhois()">▶ WHOIS Lookup</button>
+        </div>
+        <div id="geoip-tab" class="tab-content" style="padding:16px">
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Geographic location, ISP, ASN information for an IP address.</p>
+          <button class="btn btn-primary" onclick="runGeoip()">▶ GeoIP Lookup</button>
+        </div>
+      </div>
+
+      <!-- DORKS -->
+      <div id="module-dorks" class="module-panel">
+        <div class="module-title">🔎 Google Dork Generator</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Category</label>
+            <select id="dork-cat" class="form-control">
+              <option value="all">All Categories</option>
+              <option value="files">Sensitive Files</option>
+              <option value="admin">Admin Panels</option>
+              <option value="sensitive">Credentials/Secrets</option>
+              <option value="subdomains">Subdomains</option>
+              <option value="vulnerabilities">Vulnerable Parameters</option>
+              <option value="info">Information Gathering</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="runDorks()">⚡ Generate Dorks</button>
+      </div>
+
+      <!-- HTTP ANALYZER -->
+      <div id="module-http" class="module-panel">
+        <div class="module-title">🌍 HTTP Security Analyzer</div>
+        <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Analyzes HTTP security headers, cookies, redirects, CORS, and detects web technologies.</p>
+        <button class="btn btn-primary" onclick="runHttp()">▶ Analyze HTTP</button>
+        <div class="divider"></div>
+        <div class="card">
+          <div class="card-title">✅ Checks</div>
+          <ul style="font-size:0.78rem;color:var(--muted);padding-left:16px;line-height:2">
+            <li>HSTS, CSP, X-Frame-Options, X-Content-Type</li>
+            <li>Referrer-Policy, Permissions-Policy</li>
+            <li>Cookie flags (Secure, HttpOnly, SameSite)</li>
+            <li>CORS misconfiguration</li>
+            <li>Technology fingerprinting</li>
+            <li>Information disclosure headers</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- SSL SCANNER -->
+      <div id="module-ssl" class="module-panel">
+        <div class="module-title">🔒 SSL/TLS Analyzer</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Port</label>
+            <input type="number" id="ssl-port" class="form-control" value="443" min="1" max="65535">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="runSsl()">▶ Analyze SSL/TLS</button>
+        <div class="divider"></div>
+        <div class="card">
+          <div class="card-title">✅ Checks</div>
+          <ul style="font-size:0.78rem;color:var(--muted);padding-left:16px;line-height:2">
+            <li>Certificate validity & expiration</li>
+            <li>Certificate chain & issuer</li>
+            <li>TLS 1.0/1.1 (deprecated) detection</li>
+            <li>TLS 1.2/1.3 support</li>
+            <li>Weak cipher suites</li>
+            <li>Self-signed certificate detection</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- DIR SCANNER -->
+      <div id="module-dirs" class="module-panel">
+        <div class="module-title">📂 Directory Scanner</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchTab(this,'dirs-tab')">Dir Scan</div>
+          <div class="tab" onclick="switchTab(this,'robots-tab')">robots.txt</div>
+        </div>
+        <div id="dirs-tab" class="tab-content active" style="padding:16px">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">File Extensions (optional)</label>
+              <input type="text" id="dir-ext" class="form-control" placeholder="php, asp, html, txt">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Threads</label>
+              <input type="number" id="dir-threads" class="form-control" value="30" min="1" max="100">
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="runDirs()">▶ Scan Directories</button>
+        </div>
+        <div id="robots-tab" class="tab-content" style="padding:16px">
+          <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Fetch and analyze robots.txt for disallowed paths and sitemap links.</p>
+          <button class="btn btn-primary" onclick="runRobots()">▶ Check robots.txt</button>
+        </div>
+      </div>
+
+      <!-- SQLI -->
+      <div id="module-sqli" class="module-panel">
+        <div class="module-title">💉 SQL Injection Tester</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Target URL (with ?param=value)</label>
+            <input type="text" id="sqli-url" class="form-control" placeholder="http://target.com/page.php?id=1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Specific Parameter (optional)</label>
+            <input type="text" id="sqli-param" class="form-control" placeholder="id (leave empty to test all)">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="runSqli()">▶ Test SQLi</button>
+        <div class="divider"></div>
+        <div class="card">
+          <div class="card-title">⚠️ Techniques</div>
+          <ul style="font-size:0.78rem;color:var(--muted);padding-left:16px;line-height:2">
+            <li>Error-based injection</li>
+            <li>Time-based blind injection (SLEEP)</li>
+            <li>Boolean-based detection</li>
+            <li>UNION-based extraction</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- XSS -->
+      <div id="module-xss" class="module-panel">
+        <div class="module-title">🎭 XSS Tester</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Target URL</label>
+            <input type="text" id="xss-url" class="form-control" placeholder="http://target.com/search?q=test">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Parameter (optional)</label>
+            <input type="text" id="xss-param" class="form-control" placeholder="q">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="runXss()">▶ Test XSS</button>
+      </div>
+
+      <!-- LFI -->
+      <div id="module-lfi" class="module-panel">
+        <div class="module-title">📁 LFI Tester</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Target URL</label>
+            <input type="text" id="lfi-url" class="form-control" placeholder="http://target.com/page.php?file=home">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Parameter</label>
+            <input type="text" id="lfi-param" class="form-control" placeholder="file">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="runLfi()">▶ Test LFI</button>
+      </div>
+
+      <!-- MISCONFIG -->
+      <div id="module-misconfig" class="module-panel">
+        <div class="module-title">⚙️ Security Misconfigurations</div>
+        <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px">Checks for dangerous HTTP methods, directory listing, exposed .git, .env files.</p>
+        <button class="btn btn-primary" onclick="runMisconfig()">▶ Check Misconfigs</button>
+      </div>
+
+      <!-- DB EXTRACTOR -->
+      <div id="module-db" class="module-panel">
+        <div class="module-title">🗄️ Database Extractor</div>
+        <div class="form-grid">
+          <div class="form-group" style="grid-column:1/-1">
+            <label class="form-label">Vulnerable URL (with injectable parameter)</label>
+            <input type="text" id="db-url" class="form-control" placeholder="http://target.com/page.php?id=1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Injectable Parameter</label>
+            <input type="text" id="db-param" class="form-control" placeholder="id">
+          </div>
+          <div class="form-group">
+            <label class="form-label">DB Type</label>
+            <select id="db-type" class="form-control">
+              <option value="">Auto-detect</option>
+              <option>MySQL</option>
+              <option>PostgreSQL</option>
+              <option>MSSQL</option>
+              <option>Oracle</option>
+              <option>SQLite</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Mode</label>
+            <select id="db-mode" class="form-control" onchange="updateDbMode(this.value)">
+              <option value="basic">Basic Info (version, user)</option>
+              <option value="enum">Enumerate DBs & Tables</option>
+              <option value="dump">Dump Table Data</option>
+            </select>
+          </div>
+          <div class="form-group" id="db-table-group" style="display:none">
+            <label class="form-label">Target Table</label>
+            <input type="text" id="db-table" class="form-control" placeholder="users">
+          </div>
+          <div class="form-group" id="db-cols-group" style="display:none">
+            <label class="form-label">Columns (comma separated)</label>
+            <input type="text" id="db-cols" class="form-control" placeholder="id,username,password">
+          </div>
+          <div class="form-group" id="db-limit-group" style="display:none">
+            <label class="form-label">Row Limit</label>
+            <input type="number" id="db-limit" class="form-control" value="20" min="1" max="100">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="runDb()">▶ Extract</button>
+          <button class="btn btn-ghost btn-sm" onclick="runDbDetect()">🔍 Detect DB Type</button>
+        </div>
+        <div class="divider"></div>
+        <div class="card" style="border-left:3px solid var(--red)">
+          <div class="card-title">⚠️ Warning</div>
+          <p style="font-size:0.78rem;color:var(--muted)">Only use on systems you have explicit written authorization to test. Unauthorized access to databases is illegal.</p>
+        </div>
+      </div>
+
+      <!-- HASH TOOLS -->
+      <div id="module-hash" class="module-panel">
+        <div class="module-title">🔑 Hash Tools</div>
+        <div class="tabs">
+          <div class="tab active" onclick="switchTab(this,'hash-id-tab')">Identify</div>
+          <div class="tab" onclick="switchTab(this,'hash-gen-tab')">Generate</div>
+          <div class="tab" onclick="switchTab(this,'hash-crack-tab')">Crack</div>
+          <div class="tab" onclick="switchTab(this,'hash-pwd-tab')">Password</div>
+        </div>
+
+        <div id="hash-id-tab" class="tab-content active" style="padding:16px">
+          <div class="form-group" style="margin-bottom:12px">
+            <label class="form-label">Hash String</label>
+            <input type="text" id="hash-input" class="form-control" placeholder="Paste hash here...">
+          </div>
+          <button class="btn btn-primary" onclick="runHashIdentify()">🔍 Identify</button>
+          <div id="hash-id-result" class="hash-output" style="margin-top:12px">Results will appear here...</div>
+        </div>
+
+        <div id="hash-gen-tab" class="tab-content" style="padding:16px">
+          <div class="form-grid">
+            <div class="form-group">
+              <label class="form-label">Text to Hash</label>
+              <input type="text" id="hash-gen-text" class="form-control" placeholder="Enter text...">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Algorithm</label>
+              <select id="hash-algo" class="form-control">
+                <option value="md5">MD5</option>
+                <option value="sha1">SHA1</option>
+                <option value="sha256" selected>SHA256</option>
+                <option value="sha512">SHA512</option>
+                <option value="sha3_256">SHA3-256</option>
+                <option value="blake2b">Blake2b</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="runHashGenerate()">⚡ Generate</button>
+          <div id="hash-gen-result" class="hash-output" style="margin-top:12px">Hash will appear here...</div>
+        </div>
+
+        <div id="hash-crack-tab" class="tab-content" style="padding:16px">
+          <div class="form-group" style="margin-bottom:12px">
+            <label class="form-label">Hash to Crack</label>
+            <input type="text" id="hash-crack-input" class="form-control" placeholder="Enter MD5/SHA1/SHA256 hash...">
+          </div>
+          <button class="btn btn-primary" onclick="runHashCrack()">🔓 Crack Hash</button>
+        </div>
+
+        <div id="hash-pwd-tab" class="tab-content" style="padding:16px">
+          <div class="tabs" style="padding:0;margin-bottom:12px">
+            <div class="tab active" onclick="switchTab(this,'pwd-analyze-sub')">Analyze</div>
+            <div class="tab" onclick="switchTab(this,'pwd-generate-sub')">Generate</div>
+          </div>
+          <div id="pwd-analyze-sub" class="tab-content active">
+            <div class="form-group" style="margin-bottom:12px">
+              <label class="form-label">Password to Analyze</label>
+              <input type="text" id="pwd-analyze-input" class="form-control" placeholder="Enter password..." oninput="analyzePasswordLive(this.value)">
+            </div>
+            <div id="pwd-meter" class="pwd-meter"></div>
+            <div id="pwd-strength-label" style="font-size:0.8rem;color:var(--muted);margin-bottom:8px"></div>
+            <div id="pwd-analyze-result"></div>
+          </div>
+          <div id="pwd-generate-sub" class="tab-content">
+            <div class="form-grid">
+              <div class="form-group">
+                <label class="form-label">Length</label>
+                <input type="number" id="pwd-gen-len" class="form-control" value="16" min="8" max="64">
+              </div>
+            </div>
+            <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" id="pwd-upper" checked> Uppercase
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" id="pwd-digits" checked> Numbers
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;cursor:pointer">
+                <input type="checkbox" id="pwd-special" checked> Symbols
+              </label>
+            </div>
+            <button class="btn btn-primary" onclick="runGeneratePassword()">⚡ Generate Password</button>
+            <div id="pwd-gen-result" class="hash-output" style="margin-top:12px">Generated password will appear here...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- REPORT -->
+      <div id="module-report" class="module-panel">
+        <div class="module-title">📊 Report Generator</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Report Title</label>
+            <input type="text" id="report-title" class="form-control" value="Security Assessment Report">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Target/Client</label>
+            <input type="text" id="report-target" class="form-control" placeholder="target.com">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="generateReport()">📊 Generate HTML Report</button>
+        <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="previewReport()">👁️ Preview</button>
+        <div class="divider"></div>
+        <div id="report-status" style="font-size:0.8rem;color:var(--muted)">Generate a report from your scan findings.</div>
+      </div>
+
+    </div>
+    <!-- END LEFT PANEL -->
+
+    <!-- RIGHT PANEL: Terminal + Results -->
+    <div class="panel-right">
+      <div class="terminal-header">
+        <span class="terminal-title">
+          <span style="color:#ef4444">●</span>
+          <span style="color:#f59e0b">●</span>
+          <span style="color:#10b981">●</span>
+          &nbsp; Terminal Output
+        </span>
+        <div class="terminal-actions">
+          <span id="scan-timer" style="font-size:0.7rem;color:var(--muted)"></span>
+        </div>
+      </div>
+      <div id="terminal" class="terminal">
+        <div class="log-line"><span class="log-msg log-accent" style="color:var(--accent)">
+╔══════════════════════════════════════╗
+║     PentestKit v1.0 - Ready          ║
+║  Select a module and enter target    ║
+╚══════════════════════════════════════╝</span></div>
+        <div class="log-line"><span class="log-msg log-muted" style="color:var(--muted)">⚠️  Use only on systems you are authorized to test</span></div>
+      </div>
+
+      <!-- Results section -->
+      <div class="results-header">
+        <span>📋 Results</span>
+        <div style="display:flex;gap:6px">
+          <span id="result-count" style="font-size:0.75rem;color:var(--muted)">0 items</span>
+          <button class="btn btn-ghost btn-sm" onclick="clearResults()">Clear</button>
+        </div>
+      </div>
+      <div id="results-body" class="results-body"></div>
+    </div>
+
+  </div>
+</div>
+</div>
+
+<script>
+// ============================================================
+// STATE
+// ============================================================
+let currentModule = 'portscan';
+let currentScanId = null;
+let currentEventSource = null;
+let scanStartTime = null;
+let scanTimerInterval = null;
+let resultCount = 0;
+let allResults = [];
+let isScanning = false;
+
+// ============================================================
+// MODULE SWITCHING
+// ============================================================
+function showModule(name) {
+  document.querySelectorAll('.module-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const panel = document.getElementById('module-' + name);
+  const nav = document.getElementById('nav-' + name);
+  if (panel) panel.classList.add('active');
+  if (nav) nav.classList.add('active');
+  currentModule = name;
+}
+
+function switchTab(el, tabId) {
+  const parent = el.closest('.module-panel') || el.closest('.tab-content') || el.closest('[id$="-tab"]') || el.parentElement.parentElement;
+  el.closest('.tabs').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  const tabContents = el.closest('.tabs').nextElementSibling;
+  let container = el.parentElement.parentElement;
+  container.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+  const target = document.getElementById(tabId);
+  if (target) target.classList.add('active');
+}
+
+function setTarget(val) {
+  document.getElementById('global-target').value = val;
+}
+
+// ============================================================
+// TERMINAL
+// ============================================================
+function log(msg, type = 'info') {
+  const term = document.getElementById('terminal');
+  const line = document.createElement('div');
+  line.className = 'log-line fade-in';
+  const now = new Date().toLocaleTimeString('en', {hour12:false});
+  line.innerHTML = `<span class="log-time">${now}</span><span class="log-msg log-${type}">${escHtml(msg)}</span>`;
+  term.appendChild(line);
+  term.scrollTop = term.scrollHeight;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function clearTerminal() {
+  document.getElementById('terminal').innerHTML = '<div class="log-line"><span class="log-msg" style="color:var(--muted)">Terminal cleared.</span></div>';
+}
+
+function logFromEvent(evt) {
+  const type = evt.type || 'info';
+  const msg = evt.message || '';
+  const typeMap = {
+    'info': 'info', 'found': 'found', 'warn': 'warn', 'vuln': 'vuln',
+    'ok': 'ok', 'error': 'error', 'complete': 'complete', 'progress': 'progress',
+    'done': 'done'
+  };
+  const logType = typeMap[type] || 'info';
+
+  if (type !== 'keepalive' && msg) {
+    log(msg, logType);
+  }
+
+  // Add to results if it's a finding
+  if (type === 'found' || type === 'vuln' || type === 'warn') {
+    addResult(evt);
+  }
+}
+
+// ============================================================
+// RESULTS PANEL
+// ============================================================
+function addResult(evt) {
+  const body = document.getElementById('results-body');
+  resultCount++;
+  document.getElementById('result-count').textContent = resultCount + ' items';
+
+  const card = document.createElement('div');
+  card.className = 'result-card fade-in';
+
+  const severity = evt.type === 'vuln' ? 'vuln' : evt.type === 'warn' ? 'warn' : 'info';
+  const icons = {vuln:'🚨', warn:'⚠️ ', found:'✅', info:'ℹ️'};
+  const icon = icons[evt.type] || '•';
+  const msg = (evt.message || '').substring(0, 120);
+
+  card.innerHTML = `
+    <div class="result-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+      <span>${icon} ${escHtml(msg)}</span>
+      <span class="tag tag-${severity}">${severity}</span>
+    </div>
+    <div class="result-card-body">
+      ${evt.data ? `<pre style="font-size:0.7rem;color:var(--muted);white-space:pre-wrap;word-break:break-all">${escHtml(JSON.stringify(evt.data, null, 2))}</pre>` : ''}
+    </div>
+  `;
+
+  body.insertBefore(card, body.firstChild);
+  allResults.push(evt);
+}
+
+function clearResults() {
+  document.getElementById('results-body').innerHTML = '';
+  resultCount = 0;
+  allResults = [];
+  document.getElementById('result-count').textContent = '0 items';
+}
+
+// ============================================================
+// SCAN ENGINE
+// ============================================================
+function startScan(endpoint, payload) {
+  if (isScanning) {
+    stopScan();
+  }
+
+  isScanning = true;
+  setStatus('scanning');
+  clearTerminal();
+  clearResults();
+
+  fetch(endpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      log('❌ Error: ' + data.error, 'error');
+      setStatus('error');
+      isScanning = false;
+      return;
+    }
+
+    currentScanId = data.scan_id;
+    startTimer();
+
+    const evtSrc = new EventSource(`/api/stream/${data.scan_id}`);
+    currentEventSource = evtSrc;
+
+    evtSrc.onmessage = (e) => {
+      const evt = JSON.parse(e.data);
+      logFromEvent(evt);
+
+      if (evt.type === 'done') {
+        evtSrc.close();
+        isScanning = false;
+        setStatus('ready');
+        stopTimer();
+      }
+
+      // Show progress bar
+      if (evt.type === 'progress' && evt.percent !== undefined) {
+        updateProgress(evt.percent);
+      }
+    };
+
+    evtSrc.onerror = (e) => {
+      evtSrc.close();
+      isScanning = false;
+      setStatus('ready');
+      stopTimer();
+      log('⚠️  Stream ended', 'warn');
+    };
+  })
+  .catch(err => {
+    log('❌ Network error: ' + err, 'error');
+    setStatus('error');
+    isScanning = false;
+  });
+}
+
+function stopScan() {
+  if (currentEventSource) {
+    currentEventSource.close();
+    currentEventSource = null;
+  }
+  isScanning = false;
+  setStatus('ready');
+  stopTimer();
+  log('⏹️  Scan stopped', 'warn');
+}
+
+function setStatus(state) {
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  if (state === 'scanning') {
+    dot.className = 'status-dot scanning';
+    text.textContent = 'Scanning...';
+    text.style.color = 'var(--orange)';
+  } else if (state === 'error') {
+    dot.className = 'status-dot';
+    dot.style.background = 'var(--red)';
+    text.textContent = 'Error';
+    text.style.color = 'var(--red)';
+  } else {
+    dot.className = 'status-dot';
+    dot.style.background = '';
+    text.textContent = 'Ready';
+    text.style.color = 'var(--muted)';
+  }
+}
+
+function startTimer() {
+  scanStartTime = Date.now();
+  scanTimerInterval = setInterval(() => {
+    const elapsed = ((Date.now() - scanStartTime) / 1000).toFixed(1);
+    document.getElementById('scan-timer').textContent = `⏱ ${elapsed}s`;
+  }, 100);
+}
+
+function stopTimer() {
+  clearInterval(scanTimerInterval);
+}
+
+function updateProgress(percent) {
+  // Could add a progress bar in terminal header
+}
+
+function getTarget() {
+  return document.getElementById('global-target').value.trim();
+}
+
+function runCurrentModule() {
+  const handlers = {
+    portscan: runPortScan, ping: runPing, banner: runBanner, firewall: runFirewall,
+    dns: () => runDns('records'), whois: runWhois, dorks: runDorks,
+    http: runHttp, ssl: runSsl, dirs: runDirs,
+    sqli: runSqli, xss: runXss, lfi: runLfi, misconfig: runMisconfig,
+    db: runDb, hash: runHashIdentify, report: generateReport
+  };
+  const handler = handlers[currentModule];
+  if (handler) handler();
+}
+
+// ============================================================
+// MODULE HANDLERS
+// ============================================================
+function runPortScan() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Please enter a target', 'warn'); return; }
+  const portType = document.getElementById('ps-type').value;
+  const threads = document.getElementById('ps-threads').value;
+  const customPorts = document.getElementById('ps-custom').value;
+  log(`🔍 Starting port scan on ${target}...`, 'info');
+  startScan('/api/scan/ports', {target, port_type: portType, custom_ports: customPorts, threads});
+}
+
+document.getElementById('ps-type').addEventListener('change', function() {
+  document.getElementById('ps-custom-wrap').style.display = this.value === 'custom' ? 'block' : 'none';
+});
+
+function runPing() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  const count = document.getElementById('ping-count').value;
+  log(`📡 Pinging ${target}...`, 'info');
+  startScan('/api/scan/ping', {target, count: parseInt(count)});
+}
+
+function runTraceroute() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`🗺️  Traceroute to ${target}...`, 'info');
+  startScan('/api/scan/traceroute', {target});
+}
+
+function runNslookup() {
+  const target = getTarget();
+  const type = document.getElementById('nsl-type').value;
+  log(`🔍 NSLookup ${target} (${type})...`, 'info');
+  startScan('/api/scan/nslookup', {target, record_type: type});
+}
+
+function runBanner() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  const ports = document.getElementById('banner-ports').value;
+  log(`🎯 Grabbing banners from ${target}...`, 'info');
+  startScan('/api/scan/banner', {target, ports});
+}
+
+function runFirewall() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`🔥 Testing firewall on ${target}...`, 'info');
+  startScan('/api/scan/firewall', {target});
+}
+
+function runDns(mode) {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`🌐 DNS ${mode} for ${target}...`, 'info');
+  startScan('/api/scan/dns', {target, mode});
+}
+
+function runWhois() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`📋 WHOIS for ${target}...`, 'info');
+  startScan('/api/scan/whois', {target});
+}
+
+function runGeoip() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`🌍 GeoIP for ${target}...`, 'info');
+  startScan('/api/scan/geoip', {target});
+}
+
+function runDorks() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  const cat = document.getElementById('dork-cat').value;
+
+  clearTerminal();
+  clearResults();
+  log(`🔎 Generating dorks for ${target}...`, 'info');
+
+  fetch('/api/dorks', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({target, category: cat})
+  })
+  .then(r => r.json())
+  .then(data => {
+    const body = document.getElementById('results-body');
+    body.innerHTML = '';
+    resultCount = 0;
+
+    data.dorks.forEach(d => {
+      const div = document.createElement('div');
+      div.className = 'dork-item fade-in';
+      div.innerHTML = `
+        <code class="dork-query">${escHtml(d.query)}</code>
+        <span class="dork-cat">${d.category}</span>
+        <a href="${d.search_url}" target="_blank" class="btn btn-ghost btn-sm">🔍</a>
+      `;
+      body.appendChild(div);
+      log(`  ${d.category}: ${d.query}`, 'found');
+      resultCount++;
+    });
+
+    document.getElementById('result-count').textContent = resultCount + ' dorks';
+    log(`✅ Generated ${resultCount} dork queries`, 'complete');
+  });
+}
+
+function runHttp() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`🌍 HTTP analysis for ${target}...`, 'info');
+  startScan('/api/scan/http', {target});
+}
+
+function runSsl() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  const port = document.getElementById('ssl-port').value;
+  log(`🔒 SSL/TLS analysis for ${target}:${port}...`, 'info');
+  startScan('/api/scan/ssl', {target, port: parseInt(port)});
+}
+
+function runDirs() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  const ext = document.getElementById('dir-ext').value;
+  const threads = document.getElementById('dir-threads').value;
+  log(`📂 Directory scan on ${target}...`, 'info');
+  startScan('/api/scan/dirs', {target, extensions: ext, threads: parseInt(threads)});
+}
+
+function runRobots() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`🤖 Checking robots.txt for ${target}...`, 'info');
+  startScan('/api/scan/robots', {target});
+}
+
+function runSqli() {
+  const target = document.getElementById('sqli-url').value.trim() || getTarget();
+  if (!target) { log('⚠️  Enter a target URL', 'warn'); return; }
+  const param = document.getElementById('sqli-param').value.trim();
+  log(`💉 SQLi test on ${target}...`, 'info');
+  startScan('/api/scan/sqli', {target, param: param || null});
+}
+
+function runXss() {
+  const target = document.getElementById('xss-url').value.trim() || getTarget();
+  if (!target) { log('⚠️  Enter a target URL', 'warn'); return; }
+  const param = document.getElementById('xss-param').value.trim();
+  log(`🎭 XSS test on ${target}...`, 'info');
+  startScan('/api/scan/xss', {target, param: param || null});
+}
+
+function runLfi() {
+  const target = document.getElementById('lfi-url').value.trim() || getTarget();
+  if (!target) { log('⚠️  Enter a target URL', 'warn'); return; }
+  const param = document.getElementById('lfi-param').value.trim();
+  log(`📁 LFI test on ${target}...`, 'info');
+  startScan('/api/scan/lfi', {target, param: param || null});
+}
+
+function runMisconfig() {
+  const target = getTarget();
+  if (!target) { log('⚠️  Enter a target', 'warn'); return; }
+  log(`⚙️  Checking misconfigurations on ${target}...`, 'info');
+  startScan('/api/scan/misconfig', {target});
+}
+
+function updateDbMode(mode) {
+  document.getElementById('db-table-group').style.display = mode === 'dump' ? 'block' : 'none';
+  document.getElementById('db-cols-group').style.display = mode === 'dump' ? 'block' : 'none';
+  document.getElementById('db-limit-group').style.display = mode === 'dump' ? 'block' : 'none';
+}
+
+function runDb() {
+  const target = document.getElementById('db-url').value.trim() || getTarget();
+  const param = document.getElementById('db-param').value.trim();
+  if (!target || !param) {
+    log('⚠️  Enter URL and parameter name', 'warn');
+    return;
+  }
+  const mode = document.getElementById('db-mode').value;
+  const dbType = document.getElementById('db-type').value || null;
+  const table = document.getElementById('db-table').value.trim();
+  const cols = document.getElementById('db-cols').value.trim();
+  const limit = document.getElementById('db-limit').value;
+
+  log(`🗄️  Database extraction on ${target} (param: ${param}, mode: ${mode})...`, 'info');
+  startScan('/api/scan/db', {
+    target, param, mode, db_type: dbType,
+    table: table || null, columns: cols || null, limit: parseInt(limit)
+  });
+}
+
+function runDbDetect() {
+  const target = document.getElementById('db-url').value.trim() || getTarget();
+  const param = document.getElementById('db-param').value.trim();
+  if (!target || !param) { log('⚠️  Enter URL and parameter', 'warn'); return; }
+  log(`🔍 Detecting DB type on ${target}...`, 'info');
+  startScan('/api/scan/db/detect', {target, param});
+}
+
+// ============================================================
+// HASH TOOLS
+// ============================================================
+function runHashIdentify() {
+  const hash = document.getElementById('hash-input').value.trim();
+  if (!hash) return;
+
+  fetch('/api/hash/identify', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({hash})
+  })
+  .then(r => r.json())
+  .then(data => {
+    const result = document.getElementById('hash-id-result');
+    if (data.possible_types.length > 0) {
+      result.style.color = 'var(--green)';
+      result.textContent = '🔑 Possible types: ' + data.possible_types.join(', ');
+      log(`Hash identified: ${data.possible_types.join(', ')}`, 'found');
+    } else {
+      result.style.color = 'var(--muted)';
+      result.textContent = '❓ Unknown hash type';
+    }
+  });
+}
+
+function runHashGenerate() {
+  const text = document.getElementById('hash-gen-text').value;
+  const algo = document.getElementById('hash-algo').value;
+
+  fetch('/api/hash/generate', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({text, algorithm: algo})
+  })
+  .then(r => r.json())
+  .then(data => {
+    document.getElementById('hash-gen-result').textContent = data.hash || 'Error';
+    log(`${algo.toUpperCase()}: ${data.hash}`, 'found');
+  });
+}
+
+function runHashCrack() {
+  const hash = document.getElementById('hash-crack-input').value.trim();
+  if (!hash) return;
+  log(`🔓 Cracking hash: ${hash.substring(0,20)}...`, 'info');
+  startScan('/api/hash/crack', {hash});
+}
+
+function analyzePasswordLive(password) {
+  if (!password) {
+    document.getElementById('pwd-meter').style.background = 'var(--bg)';
+    document.getElementById('pwd-meter').style.width = '100%';
+    document.getElementById('pwd-strength-label').textContent = '';
+    document.getElementById('pwd-analyze-result').innerHTML = '';
+    return;
+  }
+
+  fetch('/api/hash/analyze', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({password})
+  })
+  .then(r => r.json())
+  .then(data => {
+    const colors = {success:'var(--green)',primary:'var(--accent)',warning:'var(--orange)',danger:'var(--red)'};
+    const meter = document.getElementById('pwd-meter');
+    const pct = (data.score / data.max_score) * 100;
+    meter.style.background = `linear-gradient(90deg,${colors[data.color] || 'var(--red)'} ${pct}%,var(--bg) ${pct}%)`;
+
+    document.getElementById('pwd-strength-label').innerHTML =
+      `<span style="color:${colors[data.color]}">${data.rating}</span> | Score: ${data.score}/${data.max_score} | Entropy: ${data.entropy_bits} bits | Length: ${data.length}`;
+
+    let html = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">';
+    const checks = [
+      ['a-z', data.has_lower, 'Lowercase'],
+      ['A-Z', data.has_upper, 'Uppercase'],
+      ['0-9', data.has_digit, 'Numbers'],
+      ['!@#', data.has_special, 'Symbols'],
+    ];
+    checks.forEach(([icon, ok, label]) => {
+      html += `<span class="tag tag-${ok ? 'ok' : 'vuln'}">${ok ? '✓' : '✗'} ${label}</span>`;
+    });
+    html += '</div>';
+
+    if (data.issues.length) {
+      html += '<div style="margin-top:6px">';
+      data.issues.forEach(i => { html += `<div style="font-size:0.75rem;color:var(--red);margin:2px 0">⚠️ ${i}</div>`; });
+      html += '</div>';
+    }
+    document.getElementById('pwd-analyze-result').innerHTML = html;
+  });
+}
+
+function runGeneratePassword() {
+  const length = document.getElementById('pwd-gen-len').value;
+  const upper = document.getElementById('pwd-upper').checked;
+  const digits = document.getElementById('pwd-digits').checked;
+  const special = document.getElementById('pwd-special').checked;
+
+  fetch('/api/hash/generate-password', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({length: parseInt(length), upper, digits, special})
+  })
+  .then(r => r.json())
+  .then(data => {
+    const el = document.getElementById('pwd-gen-result');
+    el.textContent = data.password;
+    log(`✅ Generated: ${data.password} (${data.strength.rating})`, 'found');
+  });
+}
+
+// ============================================================
+// REPORT
+// ============================================================
+function generateReport() {
+  const title = document.getElementById('report-title').value;
+  const target = document.getElementById('report-target').value || getTarget();
+
+  // Build sections from collected results
+  const sections = {};
+  if (allResults.length > 0) {
+    sections['Findings'] = allResults.map(r => ({
+      type: r.message || 'Finding',
+      severity: r.type === 'vuln' ? 'critical' : r.type === 'warn' ? 'medium' : 'low',
+      description: r.message || ''
+    }));
+  }
+
+  fetch('/api/report/generate', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({title, target, sections})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      document.getElementById('report-status').innerHTML = `
+        ✅ Report generated: <code>${data.filename}</code><br>
+        <button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="downloadReport('${data.filename}')">⬇️ Download</button>
+      `;
+      log(`📊 Report saved: ${data.filename}`, 'complete');
+    }
+  });
+}
+
+function downloadReport(filename) {
+  window.open(`/api/report/download/${filename}`, '_blank');
+}
+
+function previewReport() {
+  log('👁️  Preview: open the generated report file in your browser', 'info');
+}
+
+// ============================================================
+// EXPORT LOGS
+// ============================================================
+function exportLogs() {
+  const term = document.getElementById('terminal');
+  const lines = [...term.querySelectorAll('.log-line')].map(l => l.querySelector('.log-msg')?.textContent || '');
+  const blob = new Blob([lines.join('\n')], {type: 'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `pentestkit_logs_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.txt`;
+  a.click();
+}
+
+// ============================================================
+// KEYBOARD SHORTCUTS
+// ============================================================
+document.addEventListener('keydown', e => {
+  if (e.key === 'F5' || (e.ctrlKey && e.key === 'Enter')) {
+    e.preventDefault();
+    runCurrentModule();
+  }
+  if (e.key === 'Escape') stopScan();
+  if (e.ctrlKey && e.key === 'l') { e.preventDefault(); clearTerminal(); }
+});
+
+// Enter on target input
+document.getElementById('global-target').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runCurrentModule();
+});
+
+log('Ready. Enter a target above and press ▶ RUN or F5', 'info');
+</script>
+</body>
+</html>
