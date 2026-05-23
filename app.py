@@ -1,5 +1,5 @@
 """
-PentestKit v1.0 - Web-Based Penetration Testing Tool
+UHQKYRA v2.0 - Web-Based Penetration Testing Tool
 Flask backend with real-time streaming via SSE
 IMPORTANT: For authorized security testing only
 """
@@ -574,9 +574,397 @@ def generate_dorks(target, category="all"):
     return dorks
 
 
+# ============================================================
+# FULL AUTO SCAN
+# ============================================================
+
+# Store full scan results for download
+full_scan_store = {}
+
+def full_auto_scan(url, scan_id, callback):
+    """Run all modules automatically on a target URL"""
+    import socket, urllib.parse
+
+    results = {
+        "url": url,
+        "domain": "",
+        "ip": "",
+        "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ports": [],
+        "dns": {},
+        "whois": {},
+        "http": {},
+        "ssl": {},
+        "directories": [],
+        "robots": {},
+        "technologies": [],
+        "vulnerabilities": [],
+        "database": None,
+        "summary": {}
+    }
+
+    # Parse domain
+    parsed = urllib.parse.urlparse(url if "://" in url else "http://" + url)
+    domain = parsed.netloc or parsed.path.split("/")[0]
+    domain = domain.split(":")[0]
+    results["domain"] = domain
+
+    try:
+        results["ip"] = socket.gethostbyname(domain)
+    except:
+        results["ip"] = "N/A"
+
+    callback({"type": "info", "message": f"🎯 Cible : {domain} ({results['ip']})"})
+    callback({"type": "info", "message": f"🕐 Démarrage du scan complet..."})
+    callback({"type": "progress", "step": 0, "total": 8, "label": "Démarrage..."})
+
+    # ── STEP 1 : WHOIS ──────────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 📋 WHOIS & DNS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 1, "total": 8, "label": "WHOIS..."})
+    try:
+        whois_data = lookup_whois(domain, callback=callback)
+        results["whois"] = whois_data.get("parsed", {})
+    except Exception as e:
+        callback({"type": "warn", "message": f"WHOIS: {e}"})
+
+    # ── STEP 2 : DNS ────────────────────────────────────────
+    callback({"type": "progress", "step": 2, "total": 8, "label": "DNS..."})
+    try:
+        dns_data = enumerate_records(domain, callback=callback)
+        results["dns"] = dns_data.get("records", {})
+    except Exception as e:
+        callback({"type": "warn", "message": f"DNS: {e}"})
+
+    # ── STEP 3 : PORT SCAN ──────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔍 PORTS OUVERTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 3, "total": 8, "label": "Port scan..."})
+    try:
+        port_data = scan_ports(domain, ports=get_common_ports(), max_workers=150, callback=callback)
+        results["ports"] = port_data.get("open_ports", [])
+    except Exception as e:
+        callback({"type": "warn", "message": f"Port scan: {e}"})
+
+    # ── STEP 4 : HTTP ───────────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🌍 ANALYSE HTTP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 4, "total": 8, "label": "HTTP..."})
+    try:
+        http_data = full_http_analysis(url, callback=callback)
+        results["http"] = http_data.get("security_headers", {})
+        results["technologies"] = http_data.get("technologies", [])
+        # HTTP vulns → vulnerabilities list
+        sec = http_data.get("security_headers", {})
+        for missing in sec.get("missing", []):
+            results["vulnerabilities"].append({
+                "type": "header",
+                "severity": missing.get("severity", "medium"),
+                "name": f"Header manquant : {missing.get('name','')}",
+                "detail": missing.get("recommendation", "")
+            })
+        for warn in sec.get("warnings", []):
+            results["vulnerabilities"].append({"type": "header", "severity": "low", "name": warn, "detail": ""})
+    except Exception as e:
+        callback({"type": "warn", "message": f"HTTP: {e}"})
+
+    # ── STEP 5 : SSL ────────────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔒 SSL / TLS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 5, "total": 8, "label": "SSL/TLS..."})
+    try:
+        ssl_data = full_ssl_analysis(domain, 443, callback=callback)
+        results["ssl"] = ssl_data
+        for v in ssl_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append({"type": "ssl", "severity": v.get("severity","medium"), "name": v.get("name",""), "detail": v.get("description","")})
+        cert = ssl_data.get("certificate") or {}
+        if cert.get("is_expired"):
+            results["vulnerabilities"].append({"type": "ssl", "severity": "critical", "name": "Certificat SSL expiré !", "detail": ""})
+        elif cert.get("is_expiring_soon"):
+            results["vulnerabilities"].append({"type": "ssl", "severity": "high", "name": f"Certificat expire dans {cert.get('days_remaining')} jours", "detail": ""})
+    except Exception as e:
+        callback({"type": "warn", "message": f"SSL: {e}"})
+
+    # ── STEP 6 : DIRS ───────────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 📂 RÉPERTOIRES & FICHIERS ━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 6, "total": 8, "label": "Directories..."})
+    try:
+        dirs_data = scan_directories(url, max_workers=40, callback=callback)
+        results["directories"] = dirs_data.get("found", [])
+        # Flag sensitive ones
+        for d in results["directories"]:
+            path = d.get("path", "")
+            if any(s in path.lower() for s in [".env", ".git", "backup", ".sql", "phpinfo", "config", "password"]):
+                if d.get("status") == 200:
+                    results["vulnerabilities"].append({"type": "exposure", "severity": "critical", "name": f"Fichier sensible exposé : /{path}", "detail": d.get("url","")})
+        robots_data = check_robots_txt(url, callback=callback)
+        results["robots"] = robots_data
+    except Exception as e:
+        callback({"type": "warn", "message": f"Dirs: {e}"})
+
+    # ── STEP 7 : VULN SCAN ──────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 💥 SCAN DE VULNÉRABILITÉS ━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 7, "total": 8, "label": "Vulnérabilités..."})
+    try:
+        misc = check_security_misconfigs(url, callback=callback)
+        for f in misc.get("findings", []):
+            results["vulnerabilities"].append({"type": "misconfig", "severity": f.get("severity","medium"), "name": f.get("type",""), "detail": f.get("detail","")})
+    except Exception as e:
+        callback({"type": "warn", "message": f"Misconfig: {e}"})
+
+    # SQLi test if URL has params
+    if "?" in url and "=" in url:
+        callback({"type": "info", "message": "💉 Paramètres détectés — test SQLi..."})
+        try:
+            sqli = test_sqli(url, callback=callback)
+            if sqli.get("vulnerable"):
+                for f in sqli.get("findings", []):
+                    results["vulnerabilities"].append({"type": "sqli", "severity": "critical", "name": f"SQL Injection : {f.get('type','')} (param: {f.get('param','')})", "detail": f.get("payload","")})
+                    # Try DB extraction
+                    callback({"type": "vuln", "message": "🗄️  SQLi confirmée — extraction DB en cours..."})
+                    try:
+                        db_res = full_db_extraction(url, list(sqli["findings"][0].get("param", "id")), mode="enum", callback=callback)
+                        results["database"] = db_res
+                        callback({"type": "vuln", "message": f"🚨 BASE DE DONNÉES EXTRAITE !"})
+                    except Exception as de:
+                        callback({"type": "warn", "message": f"DB extraction: {de}"})
+        except Exception as e:
+            callback({"type": "warn", "message": f"SQLi: {e}"})
+
+        try:
+            xss = test_xss(url, callback=callback)
+            if xss.get("vulnerable"):
+                for f in xss.get("findings", []):
+                    results["vulnerabilities"].append({"type": "xss", "severity": "high", "name": f"XSS (param: {f.get('param','')})", "detail": f.get("payload","")})
+        except Exception as e:
+            pass
+
+    # ── STEP 8 : SUMMARY ────────────────────────────────────
+    callback({"type": "progress", "step": 8, "total": 8, "label": "Finalisation..."})
+
+    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for v in results["vulnerabilities"]:
+        sev = v.get("severity", "low")
+        sev_counts[sev] = sev_counts.get(sev, 0) + 1
+
+    risk_score = sev_counts["critical"]*10 + sev_counts["high"]*7 + sev_counts["medium"]*4 + sev_counts["low"]*1
+    overall = "CRITIQUE" if risk_score >= 30 else "ÉLEVÉ" if risk_score >= 15 else "MOYEN" if risk_score >= 5 else "FAIBLE"
+
+    results["summary"] = {
+        "open_ports": len(results["ports"]),
+        "dirs_found": len([d for d in results["directories"] if d.get("status") == 200]),
+        "vulns_critical": sev_counts["critical"],
+        "vulns_high": sev_counts["high"],
+        "vulns_medium": sev_counts["medium"],
+        "vulns_low": sev_counts["low"],
+        "total_vulns": sum(sev_counts.values()),
+        "technologies": len(results["technologies"]),
+        "risk_score": risk_score,
+        "overall_risk": overall,
+        "has_database": results["database"] is not None
+    }
+
+    full_scan_store[scan_id] = results
+    callback({"type": "done_full", "message": "SCAN_COMPLETE", "data": results["summary"]})
+    return results
+
+
+@app.route('/api/fullscan', methods=['POST'])
+def api_fullscan():
+    data = request.json
+    url = data.get('url', '').strip()
+    if not url:
+        return jsonify({"error": "URL requise"}), 400
+
+    scan_id = f"full_{int(time.time()*1000)}"
+    scan_queues[scan_id] = queue.Queue()
+    scan_results_store[scan_id] = {"status": "running"}
+
+    def run():
+        q = scan_queues[scan_id]
+        def cb(msg):
+            q.put(msg)
+        try:
+            full_auto_scan(url, scan_id, cb)
+        except Exception as e:
+            q.put({"type": "error", "message": str(e)})
+        finally:
+            q.put({"type": "done", "message": "Terminé"})
+            scan_results_store[scan_id]["status"] = "complete"
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/download/txt/<scan_id>')
+def download_txt(scan_id):
+    """Generate and download .txt report"""
+    res = full_scan_store.get(scan_id)
+    if not res:
+        return jsonify({"error": "Résultats introuvables"}), 404
+
+    lines = []
+    lines.append("=" * 60)
+    lines.append(f"  PENTESTKIT v1.0 — RAPPORT DE SÉCURITÉ")
+    lines.append("=" * 60)
+    lines.append(f"Cible     : {res['url']}")
+    lines.append(f"Domaine   : {res['domain']}")
+    lines.append(f"IP        : {res['ip']}")
+    lines.append(f"Date      : {res['scan_time']}")
+    s = res.get("summary", {})
+    lines.append(f"Risque    : {s.get('overall_risk','?')} (score: {s.get('risk_score',0)})")
+    lines.append("")
+
+    lines.append("─" * 60)
+    lines.append("RÉSUMÉ")
+    lines.append("─" * 60)
+    lines.append(f"  Ports ouverts      : {s.get('open_ports',0)}")
+    lines.append(f"  Répertoires trouvés: {s.get('dirs_found',0)}")
+    lines.append(f"  Vulnérabilités     : {s.get('total_vulns',0)}")
+    lines.append(f"    ├─ Critiques     : {s.get('vulns_critical',0)}")
+    lines.append(f"    ├─ Élevées       : {s.get('vulns_high',0)}")
+    lines.append(f"    ├─ Moyennes      : {s.get('vulns_medium',0)}")
+    lines.append(f"    └─ Faibles       : {s.get('vulns_low',0)}")
+    lines.append(f"  Technologies       : {s.get('technologies',0)}")
+    lines.append(f"  Base de données    : {'OUI ⚠️' if s.get('has_database') else 'Non'}")
+    lines.append("")
+
+    lines.append("─" * 60)
+    lines.append("PORTS OUVERTS")
+    lines.append("─" * 60)
+    ports = res.get("ports", [])
+    if ports:
+        lines.append(f"  {'PORT':<8} {'SERVICE':<15} {'RISQUE':<8} BANNER")
+        lines.append(f"  {'─'*6:<8} {'─'*13:<15} {'─'*6:<8} {'─'*20}")
+        for p in sorted(ports, key=lambda x: x.get("port", 0)):
+            port = p.get("port","")
+            svc = p.get("service","?")
+            risk = p.get("risk","?").upper()
+            banner = (p.get("banner") or "")[:50]
+            lines.append(f"  {port:<8} {svc:<15} {risk:<8} {banner}")
+    else:
+        lines.append("  Aucun port ouvert détecté")
+    lines.append("")
+
+    lines.append("─" * 60)
+    lines.append("INFORMATIONS DNS")
+    lines.append("─" * 60)
+    dns = res.get("dns", {})
+    for rtype, records in dns.items():
+        if records:
+            for r in (records if isinstance(records, list) else [records])[:5]:
+                lines.append(f"  {rtype:<8} {str(r)[:70]}")
+    lines.append("")
+
+    lines.append("─" * 60)
+    lines.append("WHOIS")
+    lines.append("─" * 60)
+    whois = res.get("whois", {})
+    for k, v in whois.items():
+        if v:
+            lines.append(f"  {k.replace('_',' ').title():<20}: {str(v)[:60]}")
+    lines.append("")
+
+    lines.append("─" * 60)
+    lines.append("TECHNOLOGIES DÉTECTÉES")
+    lines.append("─" * 60)
+    for t in res.get("technologies", []):
+        lines.append(f"  [{t.get('category','?')}] {t.get('name','?')} ({t.get('confidence','?')})")
+    if not res.get("technologies"):
+        lines.append("  Aucune technologie détectée")
+    lines.append("")
+
+    lines.append("─" * 60)
+    lines.append("RÉPERTOIRES ET FICHIERS TROUVÉS")
+    lines.append("─" * 60)
+    dirs_200 = [d for d in res.get("directories", []) if d.get("status") == 200]
+    dirs_other = [d for d in res.get("directories", []) if d.get("status") in [401, 403]]
+    for d in dirs_200[:50]:
+        lines.append(f"  [200] /{d.get('path','')}  ({d.get('size',0)} bytes)")
+    for d in dirs_other[:20]:
+        lines.append(f"  [{d.get('status')}] /{d.get('path','')}  (accès refusé)")
+    if not dirs_200 and not dirs_other:
+        lines.append("  Aucun répertoire trouvé")
+    lines.append("")
+
+    if res.get("robots", {}).get("found"):
+        lines.append("─" * 60)
+        lines.append("ROBOTS.TXT")
+        lines.append("─" * 60)
+        for p in res["robots"].get("disallowed", [])[:20]:
+            if p:
+                lines.append(f"  Disallow: {p}")
+        lines.append("")
+
+    lines.append("─" * 60)
+    lines.append("VULNÉRABILITÉS")
+    lines.append("─" * 60)
+    vulns = res.get("vulnerabilities", [])
+    if vulns:
+        sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        for v in sorted(vulns, key=lambda x: sev_order.get(x.get("severity","low"), 4)):
+            sev = v.get("severity","?").upper()
+            name = v.get("name","?")
+            detail = v.get("detail","")
+            lines.append(f"  [{sev}] {name}")
+            if detail:
+                lines.append(f"         → {detail[:80]}")
+    else:
+        lines.append("  Aucune vulnérabilité critique détectée")
+    lines.append("")
+
+    if res.get("database"):
+        db = res["database"]
+        lines.append("─" * 60)
+        lines.append("BASE DE DONNÉES EXTRAITE ⚠️")
+        lines.append("─" * 60)
+        lines.append(f"  Type    : {db.get('db_type','?')}")
+        lines.append(f"  Version : {db.get('version','?')}")
+        lines.append(f"  User    : {db.get('current_user','?')}")
+        lines.append(f"  DB      : {db.get('current_db','?')}")
+        lines.append(f"  Bases   : {', '.join(db.get('databases',[]))}")
+        lines.append(f"  Tables  : {', '.join(db.get('tables',[]))}")
+        lines.append("")
+
+    lines.append("=" * 60)
+    lines.append("  ⚠️  RAPPORT CONFIDENTIEL — USAGE AUTORISÉ UNIQUEMENT")
+    lines.append(f"  Généré par UHQKYRA v2.0 — {res['scan_time']}")
+    lines.append("=" * 60)
+
+    content = "\n".join(lines)
+    fname = f"pentest_{res['domain']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    os.makedirs("reports", exist_ok=True)
+    path = f"reports/{fname}"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    return send_file(path, as_attachment=True, download_name=fname, mimetype="text/plain")
+
+
+@app.route('/api/download/db/<scan_id>')
+def download_db(scan_id):
+    """Download extracted database as JSON"""
+    res = full_scan_store.get(scan_id)
+    if not res or not res.get("database"):
+        return jsonify({"error": "Pas de données DB pour ce scan"}), 404
+
+    db_data = res["database"]
+    fname = f"database_{res['domain']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    os.makedirs("reports", exist_ok=True)
+    path = f"reports/{fname}"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(db_data, f, indent=2, ensure_ascii=False, default=str)
+
+    return send_file(path, as_attachment=True, download_name=fname, mimetype="application/json")
+
+
+@app.route('/api/fullscan/results/<scan_id>')
+def get_full_results(scan_id):
+    res = full_scan_store.get(scan_id)
+    if not res:
+        return jsonify({"error": "Introuvable"}), 404
+    return jsonify(res)
+
+
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='PentestKit v1.0')
+    parser = argparse.ArgumentParser(description='UHQKYRA v2.0')
     parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5000)), help='Port (default: 5000)')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host (default: 0.0.0.0)')
     args = parser.parse_args()
@@ -584,7 +972,7 @@ if __name__ == '__main__':
     os.makedirs('reports', exist_ok=True)
     print(f"""
 ╔═══════════════════════════════════════════════╗
-║       PentestKit v1.0 - Web Security Tool      ║
+║       UHQKYRA v2.0 - Web Security Tool      ║
 ║  ⚠️  For authorized security testing only!     ║
 ╠═══════════════════════════════════════════════╣
 ║  🌐 Interface: http://127.0.0.1:{args.port:<14}║
