@@ -1,8 +1,9 @@
 """
-Vulnerability Scanner Module - UHQKYRA v3.0
+Vulnerability Scanner Module - UHQKYRA v3.1
 Tests: SQLi, XSS, LFI, Open Redirect, Command Injection, XXE,
        CRLF, NoSQL Injection, LDAP Injection, XML Injection,
        Path Traversal, HTTP Parameter Pollution, Misconfigurations
+Stealth: UA rotation, IP spoof, jitter, SQL payload obfuscation
 """
 import re
 import time
@@ -16,6 +17,29 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+try:
+    from modules.evasion import (
+        random_ua, random_headers, burst_jitter, jitter,
+        obfuscate_sql, sql_bypass_variants, waf_bypass_headers,
+    )
+    _EVA = True
+except ImportError:
+    try:
+        from evasion import (
+            random_ua, random_headers, burst_jitter, jitter,
+            obfuscate_sql, sql_bypass_variants, waf_bypass_headers,
+        )
+        _EVA = True
+    except ImportError:
+        _EVA = False
+        def random_ua(): return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        def random_headers(**kw): return {"User-Agent": random_ua()}
+        def burst_jitter(): pass
+        def jitter(*a, **kw): pass
+        def obfuscate_sql(s, level=2): return s
+        def sql_bypass_variants(p): return [("plain", p)]
+        def waf_bypass_headers(): return {"User-Agent": random_ua()}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -233,12 +257,20 @@ CMDI_INDICATORS = [
 
 
 def _session():
+    """Create stealth requests.Session with rotating UA + IP spoof headers"""
     if not HAS_REQUESTS:
         return None
     s = requests.Session()
-    s.headers.update(HEADERS)
+    s.headers.update(random_headers(include_ip_spoof=True, include_referrer=True))
     s.verify = False
     return s
+
+
+def _rotate(s):
+    """Rotate headers on existing session + jitter (call before each request)"""
+    if s:
+        s.headers.update(random_headers(include_ip_spoof=True, include_referrer=True))
+    burst_jitter()
 
 
 def _build_test_url(url, param, payload):

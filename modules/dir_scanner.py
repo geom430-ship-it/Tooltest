@@ -4,12 +4,26 @@ Discovers hidden directories, files, and admin panels
 """
 import concurrent.futures
 import time
+import random
 
 try:
     import requests
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+try:
+    from modules.evasion import random_ua, random_headers, burst_jitter
+    _EVASION = True
+except ImportError:
+    try:
+        from evasion import random_ua, random_headers, burst_jitter
+        _EVASION = True
+    except ImportError:
+        _EVASION = False
+        def random_ua(): return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        def random_headers(**kw): return {"User-Agent": random_ua()}
+        def burst_jitter(): pass
 
 # Built-in wordlists
 COMMON_DIRS = [
@@ -105,16 +119,19 @@ INTERESTING_CODES = {200, 201, 204, 301, 302, 401, 403}
 
 
 def check_path(base_url, path, session=None, timeout=5):
-    """Check if a path exists on the server"""
+    """Check if a path exists on the server — stealth: random UA per request"""
     url = base_url.rstrip('/') + '/' + path.lstrip('/')
+    hdrs = random_headers(include_ip_spoof=True, include_referrer=True)
+    burst_jitter()
 
     try:
         if HAS_REQUESTS:
+            if session:
+                session.headers.update(hdrs)
             resp = session.get(url, timeout=timeout, allow_redirects=False,
                               verify=False) if session else \
                    __import__('requests').get(url, timeout=timeout, allow_redirects=False,
-                                             verify=False,
-                                             headers={"User-Agent": "Mozilla/5.0 (compatible; PentestKit/1.0)"})
+                                             verify=False, headers=hdrs)
 
             result = {
                 "path": path,

