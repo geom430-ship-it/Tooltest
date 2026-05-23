@@ -38,6 +38,13 @@ from modules.advanced_vuln import (
     discover_parameters, test_ssrf, test_ssti
 )
 from modules.email_security import check_email_security
+# New modules v4.0
+from modules.subdomain_enum import enumerate_subdomains_fast
+from modules.jwt_analyzer import analyze_jwt, find_jwt_in_response, find_jwts_on_page
+from modules.login_bruteforce import scan_login_bruteforce
+from modules.graphql_auditor import scan_graphql
+from modules.idor_scanner import scan_idor
+from modules.takeover_checker import check_takeover
 
 app = Flask(__name__)
 CORS(app)
@@ -630,10 +637,10 @@ def generate_dorks(target, category="all"):
 # Store full scan results for download
 full_scan_store = {}
 
-TOTAL_STEPS = 12
+TOTAL_STEPS = 18
 
 def full_auto_scan(url, scan_id, callback):
-    """Run all modules automatically on a target URL — v3.0 with 12 steps"""
+    """Run all modules automatically on a target URL — v4.0 with 18 steps, 22 modules"""
     import socket, urllib.parse
 
     results = {
@@ -658,6 +665,11 @@ def full_auto_scan(url, scan_id, callback):
         "api_endpoints": [],
         "subdomains": [],
         "emails_found": [],
+        "jwt_findings": [],
+        "login_findings": [],
+        "graphql_findings": [],
+        "idor_findings": [],
+        "takeover_findings": [],
         "summary": {}
     }
 
@@ -673,7 +685,7 @@ def full_auto_scan(url, scan_id, callback):
         results["ip"] = "N/A"
 
     callback({"type": "info", "message": f"🎯 Cible : {domain} ({results['ip']})"})
-    callback({"type": "info", "message": f"🚀 UHQKYRA v3.0 — Scan complet ({TOTAL_STEPS} modules)..."})
+    callback({"type": "info", "message": f"🚀 UHQKYRA v4.0 — Scan complet ({TOTAL_STEPS} étapes, 22 modules)..."})
     callback({"type": "progress", "step": 0, "total": TOTAL_STEPS, "label": "Démarrage..."})
 
     # ── STEP 1 : WHOIS + GeoIP ──────────────────────────────
@@ -711,18 +723,54 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"Email security: {e}"})
 
-    # ── STEP 3 : PORT SCAN ──────────────────────────────────
+    # ── STEP 3 : SUBDOMAIN ENUMERATION ─────────────────────
+    callback({"type": "section", "message": "\n━━━ 🌐 ÉNUMÉRATION SOUS-DOMAINES ━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 3, "total": TOTAL_STEPS, "label": "Sous-domaines..."})
+    try:
+        sub_data = enumerate_subdomains_fast(domain, callback=callback)
+        results["subdomains"] = sub_data.get("found", [])
+        if sub_data.get("wildcard"):
+            results["vulnerabilities"].append({
+                "type": "wildcard_dns", "severity": "info",
+                "name": "Wildcard DNS détecté",
+                "detail": f"IP: {sub_data.get('wildcard_ip','')}"
+            })
+    except Exception as e:
+        callback({"type": "warn", "message": f"Subdomain enum: {e}"})
+
+    # ── STEP 4 : SUBDOMAIN TAKEOVER ─────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🎯 SUBDOMAIN TAKEOVER CHECK ━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 4, "total": TOTAL_STEPS, "label": "Takeover check..."})
+    try:
+        if results["subdomains"]:
+            sub_fqdns = [s.get("subdomain", s) if isinstance(s, dict) else s
+                         for s in results["subdomains"]]
+            to_data = check_takeover(domain, subdomains=sub_fqdns, callback=callback)
+            results["takeover_findings"] = to_data.get("vulnerable", [])
+            for tf in to_data.get("vulnerable", []):
+                results["vulnerabilities"].append({
+                    "type": "subdomain_takeover",
+                    "severity": "critical",
+                    "name": f"Subdomain Takeover: {tf.get('subdomain','')}",
+                    "detail": f"→ {tf.get('service','')} (CNAME: {tf.get('cname','')})"
+                })
+        else:
+            callback({"type": "info", "message": "🎯 Aucun sous-domaine trouvé — skip takeover"})
+    except Exception as e:
+        callback({"type": "warn", "message": f"Takeover check: {e}"})
+
+    # ── STEP 5 : PORT SCAN ──────────────────────────────────
     callback({"type": "section", "message": "\n━━━ 🔍 SCAN DE PORTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 3, "total": TOTAL_STEPS, "label": "Port scan..."})
+    callback({"type": "progress", "step": 5, "total": TOTAL_STEPS, "label": "Port scan..."})
     try:
         port_data = scan_ports(domain, ports=get_common_ports(), max_workers=150, callback=callback)
         results["ports"] = port_data.get("open_ports", [])
     except Exception as e:
         callback({"type": "warn", "message": f"Port scan: {e}"})
 
-    # ── STEP 4 : WAF DETECTION ──────────────────────────────
+    # ── STEP 6 : WAF DETECTION ──────────────────────────────
     callback({"type": "section", "message": "\n━━━ 🛡️ DÉTECTION WAF/CDN ━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 4, "total": TOTAL_STEPS, "label": "WAF..."})
+    callback({"type": "progress", "step": 6, "total": TOTAL_STEPS, "label": "WAF..."})
     try:
         waf_data = detect_waf(url, callback=callback)
         results["waf"] = waf_data
@@ -737,9 +785,9 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"WAF: {e}"})
 
-    # ── STEP 5 : HTTP ANALYSIS ──────────────────────────────
+    # ── STEP 7 : HTTP ANALYSIS ──────────────────────────────
     callback({"type": "section", "message": "\n━━━ 🌍 ANALYSE HTTP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 5, "total": TOTAL_STEPS, "label": "HTTP..."})
+    callback({"type": "progress", "step": 7, "total": TOTAL_STEPS, "label": "HTTP..."})
     try:
         http_data = full_http_analysis(url, callback=callback)
         results["http"] = http_data.get("security_headers", {})
@@ -757,9 +805,9 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"HTTP: {e}"})
 
-    # ── STEP 6 : SSL/TLS ────────────────────────────────────
+    # ── STEP 8 : SSL/TLS ────────────────────────────────────
     callback({"type": "section", "message": "\n━━━ 🔒 SSL / TLS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 6, "total": TOTAL_STEPS, "label": "SSL/TLS..."})
+    callback({"type": "progress", "step": 8, "total": TOTAL_STEPS, "label": "SSL/TLS..."})
     try:
         ssl_data = full_ssl_analysis(domain, 443, callback=callback)
         results["ssl"] = ssl_data
@@ -782,9 +830,9 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"SSL: {e}"})
 
-    # ── STEP 7 : CMS DETECTION ──────────────────────────────
+    # ── STEP 9 : CMS DETECTION ──────────────────────────────
     callback({"type": "section", "message": "\n━━━ 🎯 DÉTECTION CMS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 7, "total": TOTAL_STEPS, "label": "CMS..."})
+    callback({"type": "progress", "step": 9, "total": TOTAL_STEPS, "label": "CMS..."})
     try:
         cms_data = scan_cms(url, callback=callback)
         results["cms"] = cms_data
@@ -810,9 +858,20 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"CMS: {e}"})
 
-    # ── STEP 8 : DIRECTORIES & FILES ────────────────────────
+    # ── STEP 10 : LOGIN BRUTEFORCE ──────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔑 LOGIN BRUTEFORCE (DEFAULT CREDS) ━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 10, "total": TOTAL_STEPS, "label": "Login bruteforce..."})
+    try:
+        login_data = scan_login_bruteforce(url, callback=callback)
+        results["login_findings"] = login_data.get("successes", [])
+        for v in login_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"Login bruteforce: {e}"})
+
+    # ── STEP 11 : DIRECTORIES & FILES ───────────────────────
     callback({"type": "section", "message": "\n━━━ 📂 RÉPERTOIRES & FICHIERS ━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 8, "total": TOTAL_STEPS, "label": "Directories..."})
+    callback({"type": "progress", "step": 11, "total": TOTAL_STEPS, "label": "Directories..."})
     try:
         dirs_data = scan_directories(url, max_workers=40, callback=callback)
         results["directories"] = dirs_data.get("found", [])
@@ -832,9 +891,9 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"Dirs: {e}"})
 
-    # ── STEP 9 : JS ANALYSIS ────────────────────────────────
-    callback({"type": "section", "message": "\n━━━ 📜 ANALYSE JAVASCRIPT ━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 9, "total": TOTAL_STEPS, "label": "JavaScript..."})
+    # ── STEP 12 : JS ANALYSIS + JWT ─────────────────────────
+    callback({"type": "section", "message": "\n━━━ 📜 ANALYSE JAVASCRIPT & JWT ━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 12, "total": TOTAL_STEPS, "label": "JavaScript + JWT..."})
     try:
         js_data = analyze_js(url, callback=callback)
         results["js"] = js_data
@@ -865,9 +924,21 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"JS analysis: {e}"})
 
-    # ── STEP 10 : API DISCOVERY ─────────────────────────────
-    callback({"type": "section", "message": "\n━━━ 🔗 DÉCOUVERTE API & ENDPOINTS ━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 10, "total": TOTAL_STEPS, "label": "API endpoints..."})
+    # JWT analysis on page
+    try:
+        jwt_page = find_jwts_on_page(url, callback=callback)
+        results["jwt_findings"] = jwt_page.get("analyses", [])
+        for analysis in jwt_page.get("analyses", []):
+            for v in analysis.get("vulnerabilities", []):
+                results["vulnerabilities"].append(v)
+        if jwt_page.get("tokens_found"):
+            callback({"type": "found", "message": f"🔑 {len(jwt_page['tokens_found'])} JWT token(s) trouvé(s)"})
+    except Exception as e:
+        callback({"type": "warn", "message": f"JWT analysis: {e}"})
+
+    # ── STEP 13 : API DISCOVERY + GRAPHQL ───────────────────
+    callback({"type": "section", "message": "\n━━━ 🔗 API, ENDPOINTS & GRAPHQL ━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 13, "total": TOTAL_STEPS, "label": "API + GraphQL..."})
     try:
         api_data = discover_api_endpoints(url, callback=callback)
         results["api_endpoints"] = api_data.get("found", [])
@@ -904,9 +975,31 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"API discovery: {e}"})
 
-    # ── STEP 11 : VULNERABILITY SCAN ────────────────────────
+    # GraphQL audit
+    try:
+        gql_results = scan_graphql(url, callback=callback)
+        results["graphql_findings"] = gql_results
+        for gql in gql_results:
+            for v in gql.get("vulnerabilities", []):
+                results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"GraphQL audit: {e}"})
+
+    # ── STEP 14 : IDOR SCANNER ──────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔓 IDOR SCAN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 14, "total": TOTAL_STEPS, "label": "IDOR scan..."})
+    try:
+        idor_data = scan_idor(url, callback=callback)
+        results["idor_findings"] = (idor_data.get("param_findings", []) +
+                                    idor_data.get("path_findings", []))
+        for v in idor_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"IDOR scan: {e}"})
+
+    # ── STEP 15 : VULNERABILITY SCAN ────────────────────────
     callback({"type": "section", "message": "\n━━━ 💥 SCAN DE VULNÉRABILITÉS ━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 11, "total": TOTAL_STEPS, "label": "Vulnérabilités..."})
+    callback({"type": "progress", "step": 15, "total": TOTAL_STEPS, "label": "Vulnérabilités..."})
 
     # Security misconfigs
     try:
@@ -1053,8 +1146,9 @@ def full_auto_scan(url, scan_id, callback):
     except Exception:
         pass
 
-    # ── STEP 12 : SUMMARY ───────────────────────────────────
-    callback({"type": "progress", "step": 12, "total": TOTAL_STEPS, "label": "Finalisation..."})
+    # ── STEP 18 : SUMMARY ───────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 📊 RAPPORT FINAL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 18, "total": TOTAL_STEPS, "label": "Finalisation..."})
 
     # Deduplicate vulnerabilities
     seen = set()
@@ -1095,6 +1189,12 @@ def full_auto_scan(url, scan_id, callback):
         "emails_found": len(results["emails_found"]),
         "subdomains": len(results["subdomains"]),
         "email_grade": (results["email_security"] or {}).get("grade", "?"),
+        # New v4.0
+        "jwt_tokens": len(results["jwt_findings"]),
+        "login_successes": len(results["login_findings"]),
+        "graphql_endpoints": len(results["graphql_findings"]),
+        "idor_findings": len(results["idor_findings"]),
+        "takeover_findings": len(results["takeover_findings"]),
     }
 
     full_scan_store[scan_id] = results
@@ -1138,7 +1238,7 @@ def download_txt(scan_id):
 
     lines = []
     lines.append("=" * 65)
-    lines.append(f"  UHQKYRA v3.0 — RAPPORT D'AUDIT DE SÉCURITÉ")
+    lines.append(f"  UHQKYRA v4.0 — RAPPORT D'AUDIT DE SÉCURITÉ (22 modules)")
     lines.append("=" * 65)
     lines.append(f"Cible     : {res['url']}")
     lines.append(f"Domaine   : {res['domain']}")
@@ -1160,6 +1260,12 @@ def download_txt(scan_id):
     lines.append(f"    └─ Faibles       : {s.get('vulns_low',0)}")
     lines.append(f"  Technologies       : {s.get('technologies',0)}")
     lines.append(f"  Base de données    : {'OUI ⚠️' if s.get('has_database') else 'Non'}")
+    lines.append(f"  Sous-domaines      : {s.get('subdomains',0)}")
+    lines.append(f"  Takeover détectés  : {s.get('takeover_findings',0)}")
+    lines.append(f"  JWT trouvés        : {s.get('jwt_tokens',0)}")
+    lines.append(f"  Logins compromis   : {s.get('login_successes',0)}")
+    lines.append(f"  GraphQL endpoints  : {s.get('graphql_endpoints',0)}")
+    lines.append(f"  IDOR détectés      : {s.get('idor_findings',0)}")
     lines.append("")
 
     lines.append("─" * 60)
@@ -1330,9 +1436,82 @@ def download_txt(scan_id):
             lines.append(f"  [{ep.get('status')}] {ep.get('path','')}  ({ep.get('size',0)}B)")
         lines.append("")
 
+    # Subdomains
+    subs = res.get("subdomains") or []
+    if subs:
+        lines.append("─" * 65)
+        lines.append(f"SOUS-DOMAINES ({len(subs)} trouvés)")
+        lines.append("─" * 65)
+        for sub in subs[:30]:
+            ips = ", ".join(sub.get("ips", []))
+            lines.append(f"  {sub.get('subdomain','')}  → {ips}")
+        lines.append("")
+
+    # Takeover findings
+    to_finds = res.get("takeover_findings") or []
+    if to_finds:
+        lines.append("─" * 65)
+        lines.append(f"SUBDOMAIN TAKEOVER ({len(to_finds)} détecté(s))")
+        lines.append("─" * 65)
+        for tf in to_finds:
+            lines.append(f"  🚨 {tf.get('subdomain','')} → {tf.get('service','')} [{tf.get('confidence','')}]")
+            if tf.get("detail"):
+                lines.append(f"     {tf['detail']}")
+        lines.append("")
+
+    # JWT findings
+    jwt_finds = res.get("jwt_findings") or []
+    if jwt_finds:
+        lines.append("─" * 65)
+        lines.append(f"JWT TOKENS ({len(jwt_finds)} analysés)")
+        lines.append("─" * 65)
+        for jf in jwt_finds:
+            lines.append(f"  Algorithme : {jf.get('algorithm','?')}")
+            if jf.get("cracked_secret"):
+                lines.append(f"  🚨 Secret cracké : {jf['cracked_secret']}")
+            if jf.get("expired"):
+                lines.append(f"  ⚠️  Token expiré")
+            for v in jf.get("vulnerabilities", [])[:3]:
+                lines.append(f"  [{v.get('severity','?').upper()}] {v.get('name','')}")
+        lines.append("")
+
+    # Login findings
+    login_finds = res.get("login_findings") or []
+    if login_finds:
+        lines.append("─" * 65)
+        lines.append(f"CREDENTIALS PAR DÉFAUT TROUVÉS ({len(login_finds)})")
+        lines.append("─" * 65)
+        for lf in login_finds:
+            lines.append(f"  🚨 {lf.get('username','')} / {lf.get('password','')} @ {lf.get('url','')}")
+        lines.append("")
+
+    # GraphQL findings
+    gql_finds = res.get("graphql_findings") or []
+    if gql_finds:
+        lines.append("─" * 65)
+        lines.append(f"GRAPHQL ({len(gql_finds)} endpoint(s))")
+        lines.append("─" * 65)
+        for gf in gql_finds:
+            lines.append(f"  Endpoint : {gf.get('endpoint','')}")
+            if gf.get("introspection_enabled"):
+                lines.append(f"  ⚠️  Introspection activée — {len(gf.get('types',[]))} types exposés")
+            for v in gf.get("vulnerabilities", [])[:3]:
+                lines.append(f"  [{v.get('severity','?').upper()}] {v.get('name','')}")
+        lines.append("")
+
+    # IDOR findings
+    idor_finds = res.get("idor_findings") or []
+    if idor_finds:
+        lines.append("─" * 65)
+        lines.append(f"IDOR ({len(idor_finds)} détecté(s))")
+        lines.append("─" * 65)
+        for iff in idor_finds:
+            lines.append(f"  🚨 {iff.get('url','')} [param={iff.get('param','')}]")
+        lines.append("")
+
     lines.append("=" * 65)
     lines.append("  ⚠️  RAPPORT CONFIDENTIEL — USAGE AUTORISÉ UNIQUEMENT")
-    lines.append(f"  Généré par UHQKYRA v3.0 — {res['scan_time']}")
+    lines.append(f"  Généré par UHQKYRA v4.0 (22 modules) — {res['scan_time']}")
     lines.append("=" * 65)
 
     content = "\n".join(lines)

@@ -6,7 +6,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#05080f">
-<title>UHQKYRA v3.0 — Security Scanner</title>
+<title>UHQKYRA v4.0 — Security Scanner</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
 :root{
@@ -332,7 +332,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
   <!-- HEADER -->
   <div class="header">
     <div class="logo">UHQKYRA</div>
-    <div class="logo-sub">Security Scanner · v3.0 · 12 Modules</div>
+    <div class="logo-sub">Security Scanner · v4.0 · 22 Modules · 18 Steps</div>
   </div>
 
   <!-- SCAN BOX -->
@@ -354,16 +354,22 @@ html,body{height:100%;background:var(--bg);color:var(--text);
     <div class="progress-steps" id="progress-steps">
       <div class="pstep" id="ps-1">WHOIS</div>
       <div class="pstep" id="ps-2">DNS</div>
-      <div class="pstep" id="ps-3">PORTS</div>
-      <div class="pstep" id="ps-4">WAF</div>
-      <div class="pstep" id="ps-5">HTTP</div>
-      <div class="pstep" id="ps-6">SSL</div>
-      <div class="pstep" id="ps-7">CMS</div>
-      <div class="pstep" id="ps-8">DIRS</div>
-      <div class="pstep" id="ps-9">JS</div>
-      <div class="pstep" id="ps-10">API</div>
-      <div class="pstep" id="ps-11">VULNS</div>
-      <div class="pstep" id="ps-12">DONE</div>
+      <div class="pstep" id="ps-3">SUBS</div>
+      <div class="pstep" id="ps-4">TKOVER</div>
+      <div class="pstep" id="ps-5">PORTS</div>
+      <div class="pstep" id="ps-6">WAF</div>
+      <div class="pstep" id="ps-7">HTTP</div>
+      <div class="pstep" id="ps-8">SSL</div>
+      <div class="pstep" id="ps-9">CMS</div>
+      <div class="pstep" id="ps-10">LOGIN</div>
+      <div class="pstep" id="ps-11">DIRS</div>
+      <div class="pstep" id="ps-12">JS+JWT</div>
+      <div class="pstep" id="ps-13">API+GQL</div>
+      <div class="pstep" id="ps-14">IDOR</div>
+      <div class="pstep" id="ps-15">VULNS</div>
+      <div class="pstep" id="ps-16">VULNS</div>
+      <div class="pstep" id="ps-17">VULNS</div>
+      <div class="pstep" id="ps-18">DONE</div>
     </div>
     <div class="progress-bar-bg">
       <div id="progress-fill" class="progress-bar-fill"></div>
@@ -409,8 +415,8 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 <script>
 // ─── STATE ───────────────────────────────────────────────────────
 let scanning = false, curScanId = null, curSrc = null, scanResults = null;
-const TOTAL = 12;
-const STEP_IDS = ['ps-1','ps-2','ps-3','ps-4','ps-5','ps-6','ps-7','ps-8','ps-9','ps-10','ps-11','ps-12'];
+const TOTAL = 18;
+const STEP_IDS = ['ps-1','ps-2','ps-3','ps-4','ps-5','ps-6','ps-7','ps-8','ps-9','ps-10','ps-11','ps-12','ps-13','ps-14','ps-15','ps-16','ps-17','ps-18'];
 
 // ─── TABS ─────────────────────────────────────────────────────────
 function showTab(n) {
@@ -530,7 +536,7 @@ function renderResults(res) {
       </div>
     </div>`;
 
-  // Meta chips: WAF, CMS, Email grade, JS secrets
+  // Meta chips: WAF, CMS, Email grade, JS secrets, new v4.0
   let chips='<div class="meta-chips fade-up">';
   const waf=res.waf||{};
   if(waf.detected)
@@ -541,8 +547,14 @@ function renderResults(res) {
   if(cms.cms) chips+=`<div class="meta-chip mc-warn">🎯 CMS: ${esc(cms.cms)}${cms.version?' v'+esc(cms.version):''}</div>`;
   const eg=s.email_grade||'?';
   chips+=`<div class="meta-chip ${eg==='A'||eg==='B'?'mc-safe':eg==='F'||eg==='D'?'mc-detected':'mc-warn'}">📧 Email: ${eg}</div>`;
-  if(s.js_secrets>0) chips+=`<div class="meta-chip mc-detected">🔑 ${s.js_secrets} secret(s) JS</div>`;
-  if(s.api_endpoints>0) chips+=`<div class="meta-chip">🔗 ${s.api_endpoints} API endpoints</div>`;
+  if(s.js_secrets>0) chips+=`<div class="meta-chip mc-detected">🔑 ${s.js_secrets} JS secrets</div>`;
+  if(s.api_endpoints>0) chips+=`<div class="meta-chip">🔗 ${s.api_endpoints} API</div>`;
+  if(s.subdomains>0) chips+=`<div class="meta-chip">🌐 ${s.subdomains} sous-domaines</div>`;
+  if(s.takeover_findings>0) chips+=`<div class="meta-chip mc-detected">🎯 ${s.takeover_findings} takeover!</div>`;
+  if(s.jwt_tokens>0) chips+=`<div class="meta-chip mc-warn">🔑 ${s.jwt_tokens} JWT</div>`;
+  if(s.login_successes>0) chips+=`<div class="meta-chip mc-detected">🚨 ${s.login_successes} login compromis!</div>`;
+  if(s.graphql_endpoints>0) chips+=`<div class="meta-chip mc-warn">🕸️ ${s.graphql_endpoints} GraphQL</div>`;
+  if(s.idor_findings>0) chips+=`<div class="meta-chip mc-detected">🔓 ${s.idor_findings} IDOR!</div>`;
   chips+='</div>';
   c.innerHTML+=chips;
 
@@ -739,6 +751,92 @@ function renderResults(res) {
         <div style="font-size:0.72rem;flex:1;word-break:break-all">${esc(String(v).slice(0,100))}</div>
       </div>`).join('');
     c.innerHTML+=buildSection('📋','WHOIS',wEnt.length,wHTML);
+  }
+
+  // Subdomains (NEW v4.0)
+  const subs=res.subdomains||[];
+  if(subs.length) {
+    const subHTML=subs.slice(0,40).map(sub=>`
+      <div class="list-item">
+        <div class="item-url">${esc(sub.subdomain||'?')}</div>
+        <div style="font-size:0.65rem;color:var(--accent)">${esc((sub.ips||[]).join(', '))}</div>
+      </div>`).join('');
+    c.innerHTML+=buildSection('🌐','Sous-domaines',subs.length,subHTML);
+  }
+
+  // Takeover findings (NEW v4.0)
+  const toFinds=res.takeover_findings||[];
+  if(toFinds.length) {
+    const toHTML=toFinds.map(tf=>`
+      <div class="list-item">
+        <div style="flex:1">
+          <div class="item-url" style="color:var(--red)">🎯 ${esc(tf.subdomain||'?')}</div>
+          <div style="font-size:0.65rem;color:var(--orange)">→ ${esc(tf.service||'?')} [${esc(tf.confidence||'?')}]</div>
+          ${tf.detail?`<div style="font-size:0.6rem;color:var(--muted)">${esc(tf.detail)}</div>`:''}
+        </div>
+      </div>`).join('');
+    c.innerHTML+=buildSection('🎯','Subdomain Takeover',toFinds.length,toHTML,true);
+  }
+
+  // JWT findings (NEW v4.0)
+  const jwtFinds=res.jwt_findings||[];
+  if(jwtFinds.length) {
+    const jwtHTML=jwtFinds.map(jf=>`
+      <div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px">
+        <div style="font-size:0.72rem">Alg: <span style="color:var(--accent)">${esc(jf.algorithm||'?')}</span>
+          ${jf.expired?'<span style="color:var(--orange)"> ⚠️ EXPIRÉ</span>':''}
+          ${jf.cracked_secret?'<span style="color:var(--red)"> 🚨 SECRET: '+esc(jf.cracked_secret)+'</span>':''}
+        </div>
+        ${(jf.vulnerabilities||[]).map(v=>`
+          <div style="font-size:0.65rem;color:${v.severity==='critical'?'var(--red)':v.severity==='high'?'var(--orange)':'var(--yellow)'}">
+            [${v.severity}] ${esc(v.name||'')}
+          </div>`).join('')}
+      </div>`).join('');
+    c.innerHTML+=buildSection('🔑','JWT Analysis',jwtFinds.length,jwtHTML);
+  }
+
+  // Login bruteforce (NEW v4.0)
+  const loginFinds=res.login_findings||[];
+  if(loginFinds.length) {
+    const loginHTML=loginFinds.map(lf=>`
+      <div class="list-item" style="background:rgba(255,71,87,0.08)">
+        <div style="flex:1">
+          <div style="font-size:0.75rem;color:var(--red);font-weight:700">🚨 Credentials compromis</div>
+          <div style="font-size:0.72rem">Login: <span style="color:var(--accent)">${esc(lf.username||'?')}</span> / <span style="color:var(--red)">${esc(lf.password||'?')}</span></div>
+          <div style="font-size:0.62rem;color:var(--muted)">${esc(lf.url||'?')}</div>
+        </div>
+      </div>`).join('');
+    c.innerHTML+=buildSection('🔑','Login Compromis',loginFinds.length,loginHTML,true);
+  }
+
+  // GraphQL (NEW v4.0)
+  const gqlFinds=res.graphql_findings||[];
+  if(gqlFinds.length) {
+    const gqlHTML=gqlFinds.map(gf=>`
+      <div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px">
+        <div class="item-url">${esc(gf.endpoint||'?')}</div>
+        ${gf.introspection_enabled?`<div style="font-size:0.65rem;color:var(--orange)">⚠️ Introspection ON — ${(gf.types||[]).length} types exposés</div>`:''}
+        ${(gf.queries||[]).length?`<div style="font-size:0.62rem;color:var(--muted)">Queries: ${esc((gf.queries||[]).slice(0,8).join(', '))}</div>`:''}
+        ${(gf.vulnerabilities||[]).map(v=>`
+          <div style="font-size:0.65rem;color:${v.severity==='critical'?'var(--red)':v.severity==='high'?'var(--orange)':'var(--yellow)'}">
+            [${v.severity}] ${esc(v.name||'')}
+          </div>`).join('')}
+      </div>`).join('');
+    c.innerHTML+=buildSection('🕸️','GraphQL',gqlFinds.length,gqlHTML);
+  }
+
+  // IDOR (NEW v4.0)
+  const idorFinds=[...(res.idor_findings||[])];
+  if(idorFinds.length) {
+    const idorHTML=idorFinds.map(idf=>`
+      <div class="list-item">
+        <div style="flex:1">
+          <div class="item-url" style="color:var(--red)">${esc(idf.url||idf.test_path||'?')}</div>
+          ${idf.param?`<div style="font-size:0.65rem;color:var(--orange)">Param: ${esc(idf.param)} (${idf.original_id}→${idf.test_id})</div>`:''}
+          ${Object.keys(idf.sensitive_data||{}).length?`<div style="font-size:0.62rem;color:var(--red)">Données sensibles: ${esc(Object.keys(idf.sensitive_data).join(', '))}</div>`:''}
+        </div>
+      </div>`).join('');
+    c.innerHTML+=buildSection('🔓','IDOR',idorFinds.length,idorHTML,true);
   }
 
   // Show download bar
