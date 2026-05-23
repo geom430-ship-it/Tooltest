@@ -1,5 +1,5 @@
 """
-UHQKYRA v2.0 - Web-Based Penetration Testing Tool
+UHQKYRA v3.0 - Web-Based Penetration Testing Tool
 Flask backend with real-time streaming via SSE
 IMPORTANT: For authorized security testing only
 """
@@ -21,10 +21,23 @@ from modules.ssl_analyzer import full_ssl_analysis
 from modules.dir_scanner import scan_directories, check_robots_txt
 from modules.whois_lookup import lookup_whois, get_ip_geolocation
 from modules.network_tools import ping_host, traceroute, banner_grab, nslookup, check_firewall
-from modules.vuln_scanner import test_sqli, test_xss, test_lfi, test_open_redirect, check_security_misconfigs
+from modules.vuln_scanner import (
+    test_sqli, test_xss, test_lfi, test_open_redirect, check_security_misconfigs,
+    test_command_injection, test_nosql_injection, test_crlf_injection,
+    test_xxe, test_ldap_injection
+)
 from modules.db_extractor import full_db_extraction, detect_db_type, get_databases, get_tables, get_columns, dump_table
 from modules.hash_tools import identify_hash, generate_hash, crack_hash, analyze_password_strength, generate_password
 from modules.report_generator import generate_html_report, save_report
+# New modules v3.0
+from modules.waf_detector import detect_waf
+from modules.cms_scanner import scan_cms
+from modules.js_analyzer import analyze_js
+from modules.advanced_vuln import (
+    run_all_advanced, discover_api_endpoints,
+    discover_parameters, test_ssrf, test_ssti
+)
+from modules.email_security import check_email_security
 
 app = Flask(__name__)
 CORS(app)
@@ -358,6 +371,42 @@ def api_misconfig():
     return jsonify({"scan_id": scan_id})
 
 
+@app.route('/api/scan/cmdi', methods=['POST'])
+def api_cmdi():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"cmdi_{int(time.time()*1000)}"
+    run_scan_with_queue(test_command_injection, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/scan/nosql', methods=['POST'])
+def api_nosql():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"nosql_{int(time.time()*1000)}"
+    run_scan_with_queue(test_nosql_injection, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/scan/crlf', methods=['POST'])
+def api_crlf():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"crlf_{int(time.time()*1000)}"
+    run_scan_with_queue(test_crlf_injection, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/scan/xxe', methods=['POST'])
+def api_xxe():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"xxe_{int(time.time()*1000)}"
+    run_scan_with_queue(test_xxe, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
 # --- Database Extraction ---
 @app.route('/api/scan/db', methods=['POST'])
 def api_db_extract():
@@ -575,14 +624,16 @@ def generate_dorks(target, category="all"):
 
 
 # ============================================================
-# FULL AUTO SCAN
+# FULL AUTO SCAN v3.0
 # ============================================================
 
 # Store full scan results for download
 full_scan_store = {}
 
+TOTAL_STEPS = 12
+
 def full_auto_scan(url, scan_id, callback):
-    """Run all modules automatically on a target URL"""
+    """Run all modules automatically on a target URL — v3.0 with 12 steps"""
     import socket, urllib.parse
 
     results = {
@@ -600,6 +651,13 @@ def full_auto_scan(url, scan_id, callback):
         "technologies": [],
         "vulnerabilities": [],
         "database": None,
+        "waf": None,
+        "cms": None,
+        "js": None,
+        "email_security": None,
+        "api_endpoints": [],
+        "subdomains": [],
+        "emails_found": [],
         "summary": {}
     }
 
@@ -615,43 +673,77 @@ def full_auto_scan(url, scan_id, callback):
         results["ip"] = "N/A"
 
     callback({"type": "info", "message": f"🎯 Cible : {domain} ({results['ip']})"})
-    callback({"type": "info", "message": f"🕐 Démarrage du scan complet..."})
-    callback({"type": "progress", "step": 0, "total": 8, "label": "Démarrage..."})
+    callback({"type": "info", "message": f"🚀 UHQKYRA v3.0 — Scan complet ({TOTAL_STEPS} modules)..."})
+    callback({"type": "progress", "step": 0, "total": TOTAL_STEPS, "label": "Démarrage..."})
 
-    # ── STEP 1 : WHOIS ──────────────────────────────────────
-    callback({"type": "section", "message": "\n━━━ 📋 WHOIS & DNS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 1, "total": 8, "label": "WHOIS..."})
+    # ── STEP 1 : WHOIS + GeoIP ──────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 📋 WHOIS & GÉOLOCALISATION ━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 1, "total": TOTAL_STEPS, "label": "WHOIS..."})
     try:
         whois_data = lookup_whois(domain, callback=callback)
         results["whois"] = whois_data.get("parsed", {})
     except Exception as e:
         callback({"type": "warn", "message": f"WHOIS: {e}"})
+    try:
+        if results["ip"] and results["ip"] != "N/A":
+            geo_data = get_ip_geolocation(results["ip"], callback=callback)
+            if geo_data:
+                results["whois"].update({"geo_country": geo_data.get("country", ""),
+                                          "geo_city": geo_data.get("city", ""),
+                                          "geo_isp": geo_data.get("isp", ""),
+                                          "geo_org": geo_data.get("org", "")})
+    except Exception:
+        pass
 
-    # ── STEP 2 : DNS ────────────────────────────────────────
-    callback({"type": "progress", "step": 2, "total": 8, "label": "DNS..."})
+    # ── STEP 2 : DNS + Email Security ───────────────────────
+    callback({"type": "section", "message": "\n━━━ 🌐 DNS & SÉCURITÉ EMAIL ━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 2, "total": TOTAL_STEPS, "label": "DNS + Email sec..."})
     try:
         dns_data = enumerate_records(domain, callback=callback)
         results["dns"] = dns_data.get("records", {})
     except Exception as e:
         callback({"type": "warn", "message": f"DNS: {e}"})
+    try:
+        email_sec = check_email_security(domain, callback=callback)
+        results["email_security"] = email_sec
+        for v in email_sec.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"Email security: {e}"})
 
     # ── STEP 3 : PORT SCAN ──────────────────────────────────
-    callback({"type": "section", "message": "\n━━━ 🔍 PORTS OUVERTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 3, "total": 8, "label": "Port scan..."})
+    callback({"type": "section", "message": "\n━━━ 🔍 SCAN DE PORTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 3, "total": TOTAL_STEPS, "label": "Port scan..."})
     try:
         port_data = scan_ports(domain, ports=get_common_ports(), max_workers=150, callback=callback)
         results["ports"] = port_data.get("open_ports", [])
     except Exception as e:
         callback({"type": "warn", "message": f"Port scan: {e}"})
 
-    # ── STEP 4 : HTTP ───────────────────────────────────────
+    # ── STEP 4 : WAF DETECTION ──────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🛡️ DÉTECTION WAF/CDN ━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 4, "total": TOTAL_STEPS, "label": "WAF..."})
+    try:
+        waf_data = detect_waf(url, callback=callback)
+        results["waf"] = waf_data
+        if waf_data.get("detected"):
+            waf_name = waf_data.get("waf_name", "WAF")
+            results["vulnerabilities"].append({
+                "type": "waf_info",
+                "severity": "info",
+                "name": f"WAF/CDN détecté : {waf_name}",
+                "detail": f"Confiance: {waf_data.get('confidence','?')}"
+            })
+    except Exception as e:
+        callback({"type": "warn", "message": f"WAF: {e}"})
+
+    # ── STEP 5 : HTTP ANALYSIS ──────────────────────────────
     callback({"type": "section", "message": "\n━━━ 🌍 ANALYSE HTTP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 4, "total": 8, "label": "HTTP..."})
+    callback({"type": "progress", "step": 5, "total": TOTAL_STEPS, "label": "HTTP..."})
     try:
         http_data = full_http_analysis(url, callback=callback)
         results["http"] = http_data.get("security_headers", {})
         results["technologies"] = http_data.get("technologies", [])
-        # HTTP vulns → vulnerabilities list
         sec = http_data.get("security_headers", {})
         for missing in sec.get("missing", []):
             results["vulnerabilities"].append({
@@ -660,70 +752,203 @@ def full_auto_scan(url, scan_id, callback):
                 "name": f"Header manquant : {missing.get('name','')}",
                 "detail": missing.get("recommendation", "")
             })
-        for warn in sec.get("warnings", []):
-            results["vulnerabilities"].append({"type": "header", "severity": "low", "name": warn, "detail": ""})
+        for warn_item in sec.get("warnings", []):
+            results["vulnerabilities"].append({"type": "header", "severity": "low", "name": str(warn_item), "detail": ""})
     except Exception as e:
         callback({"type": "warn", "message": f"HTTP: {e}"})
 
-    # ── STEP 5 : SSL ────────────────────────────────────────
+    # ── STEP 6 : SSL/TLS ────────────────────────────────────
     callback({"type": "section", "message": "\n━━━ 🔒 SSL / TLS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 5, "total": 8, "label": "SSL/TLS..."})
+    callback({"type": "progress", "step": 6, "total": TOTAL_STEPS, "label": "SSL/TLS..."})
     try:
         ssl_data = full_ssl_analysis(domain, 443, callback=callback)
         results["ssl"] = ssl_data
         for v in ssl_data.get("vulnerabilities", []):
-            results["vulnerabilities"].append({"type": "ssl", "severity": v.get("severity","medium"), "name": v.get("name",""), "detail": v.get("description","")})
+            results["vulnerabilities"].append({
+                "type": "ssl", "severity": v.get("severity","medium"),
+                "name": v.get("name",""), "detail": v.get("description","")
+            })
         cert = ssl_data.get("certificate") or {}
         if cert.get("is_expired"):
-            results["vulnerabilities"].append({"type": "ssl", "severity": "critical", "name": "Certificat SSL expiré !", "detail": ""})
+            results["vulnerabilities"].append({
+                "type": "ssl", "severity": "critical",
+                "name": "Certificat SSL expiré !", "detail": ""
+            })
         elif cert.get("is_expiring_soon"):
-            results["vulnerabilities"].append({"type": "ssl", "severity": "high", "name": f"Certificat expire dans {cert.get('days_remaining')} jours", "detail": ""})
+            results["vulnerabilities"].append({
+                "type": "ssl", "severity": "high",
+                "name": f"Certificat expire dans {cert.get('days_remaining')} jours", "detail": ""
+            })
     except Exception as e:
         callback({"type": "warn", "message": f"SSL: {e}"})
 
-    # ── STEP 6 : DIRS ───────────────────────────────────────
+    # ── STEP 7 : CMS DETECTION ──────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🎯 DÉTECTION CMS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 7, "total": TOTAL_STEPS, "label": "CMS..."})
+    try:
+        cms_data = scan_cms(url, callback=callback)
+        results["cms"] = cms_data
+        for v in cms_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+        # Add login pages as findings
+        for lp in cms_data.get("login_pages", [])[:5]:
+            results["vulnerabilities"].append({
+                "type": "login_page",
+                "severity": "info",
+                "name": f"Page admin/login exposée",
+                "detail": lp
+            })
+        # Add exposed files
+        for ef in cms_data.get("exposed_files", []):
+            if ef.get("severity") in ("critical", "high"):
+                results["vulnerabilities"].append({
+                    "type": "exposure",
+                    "severity": ef["severity"],
+                    "name": f"Fichier sensible exposé : {ef.get('path','')}",
+                    "detail": url + ef.get("path", "")
+                })
+    except Exception as e:
+        callback({"type": "warn", "message": f"CMS: {e}"})
+
+    # ── STEP 8 : DIRECTORIES & FILES ────────────────────────
     callback({"type": "section", "message": "\n━━━ 📂 RÉPERTOIRES & FICHIERS ━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 6, "total": 8, "label": "Directories..."})
+    callback({"type": "progress", "step": 8, "total": TOTAL_STEPS, "label": "Directories..."})
     try:
         dirs_data = scan_directories(url, max_workers=40, callback=callback)
         results["directories"] = dirs_data.get("found", [])
-        # Flag sensitive ones
         for d in results["directories"]:
             path = d.get("path", "")
-            if any(s in path.lower() for s in [".env", ".git", "backup", ".sql", "phpinfo", "config", "password"]):
+            if any(s in path.lower() for s in [".env", ".git", "backup", ".sql", "phpinfo",
+                                                "config", "password", ".aws", "credentials",
+                                                "wp-config", "database", "dump"]):
                 if d.get("status") == 200:
-                    results["vulnerabilities"].append({"type": "exposure", "severity": "critical", "name": f"Fichier sensible exposé : /{path}", "detail": d.get("url","")})
+                    results["vulnerabilities"].append({
+                        "type": "exposure", "severity": "critical",
+                        "name": f"Fichier sensible exposé : /{path}",
+                        "detail": d.get("url", "")
+                    })
         robots_data = check_robots_txt(url, callback=callback)
         results["robots"] = robots_data
     except Exception as e:
         callback({"type": "warn", "message": f"Dirs: {e}"})
 
-    # ── STEP 7 : VULN SCAN ──────────────────────────────────
+    # ── STEP 9 : JS ANALYSIS ────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 📜 ANALYSE JAVASCRIPT ━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 9, "total": TOTAL_STEPS, "label": "JavaScript..."})
+    try:
+        js_data = analyze_js(url, callback=callback)
+        results["js"] = js_data
+        results["emails_found"].extend(js_data.get("emails", []))
+        for secret in js_data.get("secrets", []):
+            results["vulnerabilities"].append({
+                "type": "secret_exposure",
+                "severity": "critical",
+                "name": f"Secret dans JS : {secret.get('type','')}",
+                "detail": secret.get("value", "")[:80]
+            })
+        if js_data.get("internal_ips"):
+            for ip in js_data["internal_ips"]:
+                results["vulnerabilities"].append({
+                    "type": "ip_disclosure",
+                    "severity": "medium",
+                    "name": f"IP interne dans JS : {ip}",
+                    "detail": "Exposition de l'architecture réseau interne"
+                })
+        if js_data.get("source_maps"):
+            for sm in js_data["source_maps"]:
+                results["vulnerabilities"].append({
+                    "type": "source_map",
+                    "severity": "medium",
+                    "name": f"Source map exposée",
+                    "detail": sm
+                })
+    except Exception as e:
+        callback({"type": "warn", "message": f"JS analysis: {e}"})
+
+    # ── STEP 10 : API DISCOVERY ─────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔗 DÉCOUVERTE API & ENDPOINTS ━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 10, "total": TOTAL_STEPS, "label": "API endpoints..."})
+    try:
+        api_data = discover_api_endpoints(url, callback=callback)
+        results["api_endpoints"] = api_data.get("found", [])
+        # Critical sensitive files
+        for sf in api_data.get("sensitive_files", []):
+            if sf.get("status") == 200:
+                results["vulnerabilities"].append({
+                    "type": "sensitive_file",
+                    "severity": sf.get("severity", "high"),
+                    "name": f"Fichier critique accessible : {sf.get('path','')}",
+                    "detail": f"Status {sf.get('status')} — {sf.get('size',0)} bytes"
+                })
+        if api_data.get("swagger_found"):
+            results["vulnerabilities"].append({
+                "type": "api_docs_exposed",
+                "severity": "medium",
+                "name": "Documentation API (Swagger/OpenAPI) exposée publiquement",
+                "detail": "Peut révéler tous les endpoints et paramètres de l'API"
+            })
+        if api_data.get("actuator_found"):
+            results["vulnerabilities"].append({
+                "type": "spring_actuator",
+                "severity": "critical",
+                "name": "Spring Boot Actuator exposé",
+                "detail": "Accès aux métriques, configs, beans de l'application"
+            })
+        if api_data.get("graphql_found"):
+            results["vulnerabilities"].append({
+                "type": "graphql_exposed",
+                "severity": "medium",
+                "name": "GraphQL endpoint exposé",
+                "detail": "Tester introspection, injections, etc."
+            })
+    except Exception as e:
+        callback({"type": "warn", "message": f"API discovery: {e}"})
+
+    # ── STEP 11 : VULNERABILITY SCAN ────────────────────────
     callback({"type": "section", "message": "\n━━━ 💥 SCAN DE VULNÉRABILITÉS ━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 7, "total": 8, "label": "Vulnérabilités..."})
+    callback({"type": "progress", "step": 11, "total": TOTAL_STEPS, "label": "Vulnérabilités..."})
+
+    # Security misconfigs
     try:
         misc = check_security_misconfigs(url, callback=callback)
         for f in misc.get("findings", []):
-            results["vulnerabilities"].append({"type": "misconfig", "severity": f.get("severity","medium"), "name": f.get("type",""), "detail": f.get("detail","")})
+            results["vulnerabilities"].append({
+                "type": "misconfig",
+                "severity": f.get("severity", "medium"),
+                "name": f.get("type", ""),
+                "detail": f.get("detail", "")
+            })
     except Exception as e:
         callback({"type": "warn", "message": f"Misconfig: {e}"})
 
-    # SQLi test if URL has params
+    # Advanced vulns: clickjacking, CORS, HTTP methods, header injection
+    try:
+        adv = run_all_advanced(url, callback=callback)
+        for f in adv.get("findings", []):
+            results["vulnerabilities"].append(f)
+    except Exception as e:
+        callback({"type": "warn", "message": f"Advanced vuln: {e}"})
+
+    # SQLi/XSS/LFI if URL has params
     if "?" in url and "=" in url:
-        callback({"type": "info", "message": "💉 Paramètres détectés — test SQLi..."})
+        callback({"type": "info", "message": "💉 Paramètres URL détectés — injection tests..."})
         try:
             sqli = test_sqli(url, callback=callback)
             if sqli.get("vulnerable"):
                 for f in sqli.get("findings", []):
-                    results["vulnerabilities"].append({"type": "sqli", "severity": "critical", "name": f"SQL Injection : {f.get('type','')} (param: {f.get('param','')})", "detail": f.get("payload","")})
-                    # Try DB extraction
-                    callback({"type": "vuln", "message": "🗄️  SQLi confirmée — extraction DB en cours..."})
-                    try:
-                        db_res = full_db_extraction(url, list(sqli["findings"][0].get("param", "id")), mode="enum", callback=callback)
-                        results["database"] = db_res
-                        callback({"type": "vuln", "message": f"🚨 BASE DE DONNÉES EXTRAITE !"})
-                    except Exception as de:
-                        callback({"type": "warn", "message": f"DB extraction: {de}"})
+                    results["vulnerabilities"].append({
+                        "type": "sqli", "severity": "critical",
+                        "name": f"SQL Injection : {f.get('type','')} (param: {f.get('param','')})",
+                        "detail": f.get("payload", "")
+                    })
+                callback({"type": "vuln", "message": "🗄️  SQLi confirmée — extraction DB..."})
+                try:
+                    first_param = sqli["findings"][0].get("param", "id")
+                    db_res = full_db_extraction(url, first_param, mode="enum", callback=callback)
+                    results["database"] = db_res
+                    callback({"type": "vuln", "message": "🚨 BASE DE DONNÉES EXTRAITE !"})
+                except Exception as de:
+                    callback({"type": "warn", "message": f"DB extraction: {de}"})
         except Exception as e:
             callback({"type": "warn", "message": f"SQLi: {e}"})
 
@@ -731,20 +956,125 @@ def full_auto_scan(url, scan_id, callback):
             xss = test_xss(url, callback=callback)
             if xss.get("vulnerable"):
                 for f in xss.get("findings", []):
-                    results["vulnerabilities"].append({"type": "xss", "severity": "high", "name": f"XSS (param: {f.get('param','')})", "detail": f.get("payload","")})
-        except Exception as e:
+                    results["vulnerabilities"].append({
+                        "type": "xss", "severity": "high",
+                        "name": f"XSS (param: {f.get('param','')})",
+                        "detail": f.get("payload", "")
+                    })
+        except Exception:
             pass
 
-    # ── STEP 8 : SUMMARY ────────────────────────────────────
-    callback({"type": "progress", "step": 8, "total": 8, "label": "Finalisation..."})
+        try:
+            lfi = test_lfi(url, callback=callback)
+            if lfi.get("vulnerable"):
+                for f in lfi.get("findings", []):
+                    results["vulnerabilities"].append({
+                        "type": "lfi", "severity": "critical",
+                        "name": f"LFI / Path Traversal (param: {f.get('param','')})",
+                        "detail": f.get("payload", "")
+                    })
+        except Exception:
+            pass
 
-    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        try:
+            redirect = test_open_redirect(url, callback=callback)
+            if redirect.get("vulnerable"):
+                for f in redirect.get("findings", []):
+                    results["vulnerabilities"].append({
+                        "type": "open_redirect", "severity": "medium",
+                        "name": f"Open Redirect (param: {f.get('param','')})",
+                        "detail": f.get("payload", "")
+                    })
+        except Exception:
+            pass
+
+        # Command injection
+        try:
+            cmdi = test_command_injection(url, callback=callback)
+            if cmdi.get("vulnerable"):
+                for f in cmdi.get("findings", []):
+                    results["vulnerabilities"].append({
+                        "type": "command_injection", "severity": "critical",
+                        "name": f"Injection de commande OS ! (param: {f.get('param','')})",
+                        "detail": f.get("payload", "")
+                    })
+        except Exception:
+            pass
+
+        # NoSQL injection
+        try:
+            nosql = test_nosql_injection(url, callback=callback)
+            if nosql.get("vulnerable"):
+                for f in nosql.get("findings", []):
+                    results["vulnerabilities"].append({
+                        "type": "nosql_injection", "severity": f.get("severity","high"),
+                        "name": f"NoSQL Injection (param: {f.get('param','')})",
+                        "detail": f.get("payload", "")
+                    })
+        except Exception:
+            pass
+
+        # LDAP injection
+        try:
+            ldap = test_ldap_injection(url, callback=callback)
+            if ldap.get("vulnerable"):
+                for f in ldap.get("findings", []):
+                    results["vulnerabilities"].append({
+                        "type": "ldap_injection", "severity": "high",
+                        "name": f"LDAP Injection (param: {f.get('param','')})",
+                        "detail": f.get("indicator", "")
+                    })
+        except Exception:
+            pass
+
+    # CRLF injection (always test, not just when params in URL)
+    try:
+        crlf = test_crlf_injection(url, callback=callback)
+        if crlf.get("vulnerable"):
+            for f in crlf.get("findings", []):
+                results["vulnerabilities"].append({
+                    "type": "crlf", "severity": f.get("severity","high"),
+                    "name": f"CRLF Injection / HTTP Response Splitting",
+                    "detail": f.get("payload","")
+                })
+    except Exception:
+        pass
+
+    # XXE (test on POST endpoints, always attempt)
+    try:
+        xxe = test_xxe(url, callback=callback)
+        if xxe.get("vulnerable"):
+            for f in xxe.get("findings", []):
+                results["vulnerabilities"].append({
+                    "type": "xxe", "severity": "critical",
+                    "name": "XXE (XML External Entity) Injection",
+                    "detail": f.get("payload","")[:80]
+                })
+    except Exception:
+        pass
+
+    # ── STEP 12 : SUMMARY ───────────────────────────────────
+    callback({"type": "progress", "step": 12, "total": TOTAL_STEPS, "label": "Finalisation..."})
+
+    # Deduplicate vulnerabilities
+    seen = set()
+    unique_vulns = []
+    for v in results["vulnerabilities"]:
+        key = (v.get("type",""), v.get("name","")[:60])
+        if key not in seen:
+            seen.add(key)
+            unique_vulns.append(v)
+    results["vulnerabilities"] = unique_vulns
+
+    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for v in results["vulnerabilities"]:
         sev = v.get("severity", "low")
         sev_counts[sev] = sev_counts.get(sev, 0) + 1
 
-    risk_score = sev_counts["critical"]*10 + sev_counts["high"]*7 + sev_counts["medium"]*4 + sev_counts["low"]*1
-    overall = "CRITIQUE" if risk_score >= 30 else "ÉLEVÉ" if risk_score >= 15 else "MOYEN" if risk_score >= 5 else "FAIBLE"
+    risk_score = (sev_counts["critical"]*10 + sev_counts["high"]*7 +
+                  sev_counts["medium"]*4 + sev_counts["low"]*1)
+    overall = ("CRITIQUE" if risk_score >= 30 else "ÉLEVÉ" if risk_score >= 15
+               else "MOYEN" if risk_score >= 5 else "FAIBLE")
 
     results["summary"] = {
         "open_ports": len(results["ports"]),
@@ -753,11 +1083,18 @@ def full_auto_scan(url, scan_id, callback):
         "vulns_high": sev_counts["high"],
         "vulns_medium": sev_counts["medium"],
         "vulns_low": sev_counts["low"],
-        "total_vulns": sum(sev_counts.values()),
+        "total_vulns": sum(v for k,v in sev_counts.items() if k != "info"),
         "technologies": len(results["technologies"]),
         "risk_score": risk_score,
         "overall_risk": overall,
-        "has_database": results["database"] is not None
+        "has_database": results["database"] is not None,
+        "waf_name": (results["waf"] or {}).get("waf_name"),
+        "cms_name": (results["cms"] or {}).get("cms"),
+        "js_secrets": len((results["js"] or {}).get("secrets", [])),
+        "api_endpoints": len(results["api_endpoints"]),
+        "emails_found": len(results["emails_found"]),
+        "subdomains": len(results["subdomains"]),
+        "email_grade": (results["email_security"] or {}).get("grade", "?"),
     }
 
     full_scan_store[scan_id] = results
@@ -800,9 +1137,9 @@ def download_txt(scan_id):
         return jsonify({"error": "Résultats introuvables"}), 404
 
     lines = []
-    lines.append("=" * 60)
-    lines.append(f"  PENTESTKIT v1.0 — RAPPORT DE SÉCURITÉ")
-    lines.append("=" * 60)
+    lines.append("=" * 65)
+    lines.append(f"  UHQKYRA v3.0 — RAPPORT D'AUDIT DE SÉCURITÉ")
+    lines.append("=" * 65)
     lines.append(f"Cible     : {res['url']}")
     lines.append(f"Domaine   : {res['domain']}")
     lines.append(f"IP        : {res['ip']}")
@@ -922,10 +1259,81 @@ def download_txt(scan_id):
         lines.append(f"  Tables  : {', '.join(db.get('tables',[]))}")
         lines.append("")
 
-    lines.append("=" * 60)
+    # WAF
+    waf = res.get("waf") or {}
+    if waf:
+        lines.append("─" * 65)
+        lines.append("WAF / CDN")
+        lines.append("─" * 65)
+        if waf.get("detected"):
+            lines.append(f"  Détecté : {waf.get('waf_name','?')} (confiance: {waf.get('confidence','?')})")
+        else:
+            lines.append("  Aucun WAF/CDN détecté")
+        lines.append("")
+
+    # CMS
+    cms = res.get("cms") or {}
+    if cms and cms.get("cms"):
+        lines.append("─" * 65)
+        lines.append("CMS DÉTECTÉ")
+        lines.append("─" * 65)
+        lines.append(f"  CMS     : {cms.get('cms','?')}")
+        if cms.get("version"):
+            lines.append(f"  Version : {cms.get('version','?')}")
+        if cms.get("login_pages"):
+            for lp in cms["login_pages"][:3]:
+                lines.append(f"  Login   : {lp}")
+        if cms.get("plugins"):
+            for p in cms["plugins"][:10]:
+                lines.append(f"  Plugin  : {p.get('name','?')} v{p.get('version','?')}")
+        lines.append("")
+
+    # JS findings
+    js = res.get("js") or {}
+    if js and (js.get("secrets") or js.get("endpoints") or js.get("emails")):
+        lines.append("─" * 65)
+        lines.append("ANALYSE JAVASCRIPT")
+        lines.append("─" * 65)
+        lines.append(f"  Fichiers JS analysés : {js.get('js_analyzed',0)}")
+        lines.append(f"  Secrets trouvés      : {len(js.get('secrets',[]))}")
+        lines.append(f"  Endpoints API        : {len(js.get('endpoints',[]))}")
+        lines.append(f"  Emails               : {len(js.get('emails',[]))}")
+        for sec in js.get("secrets", [])[:5]:
+            lines.append(f"  🚨 [{sec.get('type','?')}] {sec.get('value','')[:80]}")
+        for ep in js.get("endpoints", [])[:10]:
+            lines.append(f"  🔗 {ep[:80]}")
+        lines.append("")
+
+    # Email Security
+    email_sec = res.get("email_security") or {}
+    if email_sec:
+        lines.append("─" * 65)
+        lines.append("SÉCURITÉ EMAIL (SPF/DMARC/DKIM)")
+        lines.append("─" * 65)
+        lines.append(f"  Grade   : {email_sec.get('grade','?')} ({email_sec.get('score',0)}/10)")
+        spf = email_sec.get("spf", {})
+        lines.append(f"  SPF     : {'✅ ' + spf.get('record','?')[:60] if spf.get('found') else '❌ Absent'}")
+        dmarc = email_sec.get("dmarc", {})
+        lines.append(f"  DMARC   : {'✅ p=' + str(dmarc.get('policy','?')) if dmarc.get('found') else '❌ Absent'}")
+        dkim = email_sec.get("dkim", {})
+        sels = ', '.join(dkim.get('selectors', [])[:5])
+        lines.append(f"  DKIM    : {'✅ ' + sels if dkim.get('found') else '❌ Non trouvé'}")
+        lines.append("")
+
+    # API Endpoints
+    api_eps = res.get("api_endpoints") or []
+    if api_eps:
+        lines.append("─" * 65)
+        lines.append("ENDPOINTS API DÉCOUVERTS")
+        lines.append("─" * 65)
+        for ep in api_eps[:20]:
+            lines.append(f"  [{ep.get('status')}] {ep.get('path','')}  ({ep.get('size',0)}B)")
+        lines.append("")
+
+    lines.append("=" * 65)
     lines.append("  ⚠️  RAPPORT CONFIDENTIEL — USAGE AUTORISÉ UNIQUEMENT")
-    lines.append(f"  Généré par UHQKYRA v2.0 — {res['scan_time']}")
-    lines.append("=" * 60)
+    lines.append(f"  Généré par UHQKYRA v3.0 — {res['scan_time']}")
+    lines.append("=" * 65)
 
     content = "\n".join(lines)
     fname = f"pentest_{res['domain']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -962,9 +1370,128 @@ def get_full_results(scan_id):
     return jsonify(res)
 
 
+@app.route('/api/download/html/<scan_id>')
+def download_html_report(scan_id):
+    """Generate and download full HTML report"""
+    res = full_scan_store.get(scan_id)
+    if not res:
+        return jsonify({"error": "Résultats introuvables"}), 404
+
+    # Build scan_data for report generator
+    scan_data = {
+        "target": res.get("url", "?"),
+        "sections": {}
+    }
+
+    # Build sections from results
+    vulns = res.get("vulnerabilities", [])
+    if vulns:
+        scan_data["sections"]["Vulnérabilités"] = [
+            {"type": v.get("name","?"), "severity": v.get("severity","low"),
+             "description": v.get("detail",""), "payload": v.get("detail","")}
+            for v in vulns
+        ]
+
+    ports = [p for p in res.get("ports", []) if p.get("state") == "open"]
+    if ports:
+        scan_data["sections"]["Ports Ouverts"] = {
+            p.get("port",""): f"{p.get('service','?')} — Risque: {p.get('risk','?')} {p.get('banner','')}"
+            for p in ports[:30]
+        }
+
+    techs = res.get("technologies", [])
+    if techs:
+        scan_data["sections"]["Technologies"] = {
+            t.get("name","?"): f"{t.get('category','?')} — {t.get('confidence','?')}"
+            for t in techs
+        }
+
+    dns = res.get("dns", {})
+    if dns:
+        scan_data["sections"]["DNS"] = {
+            k: str(v)[:200] for k,v in dns.items() if v
+        }
+
+    whois = res.get("whois", {})
+    if whois:
+        scan_data["sections"]["WHOIS"] = {k: str(v)[:200] for k,v in whois.items() if v}
+
+    waf = res.get("waf") or {}
+    cms = res.get("cms") or {}
+    info_section = {}
+    if waf.get("detected"):
+        info_section["WAF/CDN"] = waf.get("waf_name", "?")
+    if cms.get("cms"):
+        info_section["CMS"] = f"{cms.get('cms','')} {cms.get('version','')}"
+    email_sec = res.get("email_security") or {}
+    if email_sec:
+        info_section["Email Security Grade"] = email_sec.get("grade","?")
+    if info_section:
+        scan_data["sections"]["Informations Générales"] = info_section
+
+    html = generate_html_report(scan_data, title=f"UHQKYRA — {res.get('domain','?')}")
+    fname = f"uhqkyra_{res['domain']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    os.makedirs("reports", exist_ok=True)
+    path = f"reports/{fname}"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(html)
+    return send_file(path, as_attachment=True, download_name=fname, mimetype="text/html")
+
+
+# ── New module API routes ──────────────────────────────────────────
+
+@app.route('/api/scan/waf', methods=['POST'])
+def api_waf():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"waf_{int(time.time()*1000)}"
+    run_scan_with_queue(detect_waf, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/scan/cms', methods=['POST'])
+def api_cms():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"cms_{int(time.time()*1000)}"
+    run_scan_with_queue(scan_cms, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/scan/js', methods=['POST'])
+def api_js():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"js_{int(time.time()*1000)}"
+    run_scan_with_queue(analyze_js, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/scan/email', methods=['POST'])
+def api_email_sec():
+    data = request.json
+    target = data.get('target', '').strip()
+    # Strip to domain
+    import urllib.parse
+    parsed = urllib.parse.urlparse(target if "://" in target else "http://"+target)
+    domain = parsed.netloc.split(":")[0] or parsed.path.split("/")[0]
+    scan_id = f"email_{int(time.time()*1000)}"
+    run_scan_with_queue(check_email_security, scan_id, domain)
+    return jsonify({"scan_id": scan_id})
+
+
+@app.route('/api/scan/api-discover', methods=['POST'])
+def api_api_discover():
+    data = request.json
+    target = data.get('target', '').strip()
+    scan_id = f"apidisc_{int(time.time()*1000)}"
+    run_scan_with_queue(discover_api_endpoints, scan_id, target)
+    return jsonify({"scan_id": scan_id})
+
+
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='UHQKYRA v2.0')
+    parser = argparse.ArgumentParser(description='UHQKYRA v3.0')
     parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5000)), help='Port (default: 5000)')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host (default: 0.0.0.0)')
     args = parser.parse_args()
@@ -972,11 +1499,11 @@ if __name__ == '__main__':
     os.makedirs('reports', exist_ok=True)
     print(f"""
 ╔═══════════════════════════════════════════════╗
-║       UHQKYRA v2.0 - Web Security Tool      ║
+║       UHQKYRA v3.0 - Web Security Tool      ║
 ║  ⚠️  For authorized security testing only!     ║
 ╠═══════════════════════════════════════════════╣
 ║  🌐 Interface: http://127.0.0.1:{args.port:<14}║
-║  📡 API: http://127.0.0.1:{args.port}/api/          ║
+║  📡 12 modules: WAF·CMS·JS·Email·API+more    ║
 ╚═══════════════════════════════════════════════╝
     """)
     app.run(debug=False, host=args.host, port=args.port, threaded=True)

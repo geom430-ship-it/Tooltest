@@ -6,457 +6,324 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#05080f">
-<title>UHQKYRA — Security Scanner</title>
+<title>UHQKYRA v3.0 — Security Scanner</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <style>
-:root {
-  --bg:      #05080f;
-  --bg2:     #0c1120;
-  --bg3:     #111827;
-  --bg4:     #1a2236;
-  --border:  #1e2d45;
-  --text:    #e2e8f0;
-  --muted:   #64748b;
-  --accent:  #00e5ff;
-  --accent2: #7c3aed;
-  --green:   #00ff88;
-  --red:     #ff4757;
-  --orange:  #ff9f43;
-  --yellow:  #ffd32a;
-  --glow:    rgba(0,229,255,0.12);
+:root{
+  --bg:#05080f;--bg2:#0c1120;--bg3:#111827;--bg4:#1a2236;
+  --border:#1e2d45;--text:#e2e8f0;--muted:#64748b;
+  --accent:#00e5ff;--accent2:#7c3aed;
+  --green:#00ff88;--red:#ff4757;--orange:#ff9f43;--yellow:#ffd32a;
+  --glow:rgba(0,229,255,0.12);
 }
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,'Segoe UI',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+html,body{height:100%;background:var(--bg);color:var(--text);
+  font-family:-apple-system,'Segoe UI',system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:3px;height:3px}
 ::-webkit-scrollbar-thumb{background:var(--border)}
 
-/* ── PAGE STRUCTURE ── */
-.page { display:flex; flex-direction:column; min-height:100vh; }
+/* ── PAGE ── */
+.page{display:flex;flex-direction:column;min-height:100vh}
 
 /* ── HEADER ── */
-.header {
-  padding: 20px 20px 0;
-  text-align: center;
-  flex-shrink: 0;
+.header{padding:18px 18px 0;text-align:center;flex-shrink:0}
+.logo{
+  font-size:clamp(1.8rem,8vw,3rem);font-weight:900;letter-spacing:6px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2),var(--accent));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  animation:logoPulse 4s ease infinite;
 }
-.logo {
-  font-size: clamp(1.8rem, 8vw, 3rem);
-  font-weight: 900;
-  letter-spacing: 6px;
-  background: linear-gradient(135deg, var(--accent), var(--accent2), var(--accent));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  text-shadow: none;
-  animation: logoPulse 4s ease infinite;
-}
-@keyframes logoPulse {
-  0%,100%{filter:brightness(1)}
-  50%{filter:brightness(1.3)}
-}
-.logo-sub {
-  font-size: 0.65rem;
-  letter-spacing: 4px;
-  color: var(--muted);
-  text-transform: uppercase;
-  margin-top: 2px;
-}
+@keyframes logoPulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.3)}}
+.logo-sub{font-size:0.62rem;letter-spacing:4px;color:var(--muted);text-transform:uppercase;margin-top:2px}
 
 /* ── SCAN BOX ── */
-.scan-box {
-  padding: 20px;
-  flex-shrink: 0;
+.scan-box{padding:16px;flex-shrink:0}
+.url-wrap{
+  display:flex;background:var(--bg3);border:1.5px solid var(--border);
+  border-radius:14px;overflow:hidden;
+  transition:border-color .2s,box-shadow .2s;
 }
-.url-wrap {
-  display: flex;
-  gap: 0;
-  background: var(--bg3);
-  border: 1.5px solid var(--border);
-  border-radius: 14px;
-  overflow: hidden;
-  transition: border-color .2s, box-shadow .2s;
-  box-shadow: 0 0 0 0 var(--glow);
+.url-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 20px var(--glow)}
+.url-input{
+  flex:1;background:transparent;border:none;outline:none;
+  padding:13px 15px;font-size:0.92rem;color:var(--text);font-family:inherit;min-width:0;
 }
-.url-wrap:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 20px var(--glow);
+.url-input::placeholder{color:var(--muted);font-size:0.82rem}
+.btn-scan{
+  padding:13px 18px;background:linear-gradient(135deg,var(--accent),#0099bb);
+  color:#000;font-weight:800;font-size:0.82rem;letter-spacing:1px;
+  border:none;cursor:pointer;transition:all .15s;white-space:nowrap;
+  display:flex;align-items:center;gap:5px;
 }
-.url-input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  padding: 14px 16px;
-  font-size: 0.95rem;
-  color: var(--text);
-  font-family: inherit;
-  min-width: 0;
-}
-.url-input::placeholder { color: var(--muted); font-size: 0.85rem; }
-.btn-scan {
-  padding: 14px 20px;
-  background: linear-gradient(135deg, var(--accent), #0099bb);
-  color: #000;
-  font-weight: 800;
-  font-size: 0.85rem;
-  letter-spacing: 1px;
-  border: none;
-  cursor: pointer;
-  transition: all .15s;
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.btn-scan:active { filter: brightness(0.85); transform: scale(0.97); }
-.btn-scan.scanning {
-  background: linear-gradient(135deg, var(--red), #c0392b);
-  color: #fff;
-}
-.scan-note {
-  text-align: center;
-  font-size: 0.7rem;
-  color: var(--muted);
-  margin-top: 8px;
-}
+.btn-scan:active{filter:brightness(0.85);transform:scale(0.97)}
+.btn-scan.scanning{background:linear-gradient(135deg,var(--red),#c0392b);color:#fff}
+.scan-note{text-align:center;font-size:0.68rem;color:var(--muted);margin-top:7px}
 
 /* ── PROGRESS ── */
-.progress-section {
-  padding: 0 20px 12px;
-  display: none;
+.progress-section{padding:0 16px 10px;display:none}
+.progress-section.visible{display:block}
+.progress-bar-bg{height:3px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-bottom:5px}
+.progress-bar-fill{
+  height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));
+  border-radius:3px;transition:width .4s ease;width:0%;
 }
-.progress-section.visible { display: block; }
-.progress-bar-bg {
-  height: 4px;
-  background: var(--bg3);
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 6px;
+.progress-steps{
+  display:flex;justify-content:space-between;margin-bottom:6px;
+  overflow-x:auto;gap:2px;
 }
-.progress-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--accent2));
-  border-radius: 4px;
-  transition: width .4s ease;
-  width: 0%;
+.pstep{
+  font-size:0.52rem;color:var(--muted);text-align:center;
+  flex-shrink:0;padding:0 3px;transition:color .3s;white-space:nowrap;
 }
-.progress-steps {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.pstep {
-  font-size: 0.6rem;
-  color: var(--muted);
-  text-align: center;
-  flex: 1;
-  padding: 0 2px;
-  transition: color .3s;
-}
-.pstep.done { color: var(--green); }
-.pstep.active { color: var(--accent); font-weight: 700; }
-.progress-label {
-  font-size: 0.75rem;
-  color: var(--accent);
-  text-align: center;
-  font-family: monospace;
-}
+.pstep.done{color:var(--green)}.pstep.active{color:var(--accent);font-weight:700}
+.progress-label{font-size:0.72rem;color:var(--accent);text-align:center;font-family:monospace}
 
 /* ── TABS ── */
-.view-tabs {
-  display: flex;
-  padding: 0 12px;
-  gap: 4px;
-  flex-shrink: 0;
+.view-tabs{display:flex;padding:0 10px;gap:3px;flex-shrink:0}
+.vtab{
+  flex:1;padding:9px 4px;text-align:center;font-size:0.68rem;font-weight:700;
+  letter-spacing:0.5px;color:var(--muted);cursor:pointer;
+  border-bottom:2px solid transparent;transition:all .15s;user-select:none;text-transform:uppercase;
 }
-.vtab {
-  flex: 1;
-  padding: 10px 6px;
-  text-align: center;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: var(--muted);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all .15s;
-  user-select: none;
-  text-transform: uppercase;
-}
-.vtab:hover { color: var(--text); }
-.vtab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.vtab .badge {
-  display: inline-block;
-  background: var(--red);
-  color: #fff;
-  font-size: 0.55rem;
-  padding: 1px 4px;
-  border-radius: 6px;
-  margin-left: 3px;
-  vertical-align: middle;
+.vtab:hover{color:var(--text)}.vtab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.vtab .badge{
+  display:inline-block;background:var(--red);color:#fff;
+  font-size:0.52rem;padding:1px 4px;border-radius:6px;margin-left:2px;vertical-align:middle;
 }
 
-/* ── CONTENT AREA ── */
-.content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 14px 90px;
-}
+/* ── CONTENT ── */
+.content{flex:1;overflow-y:auto;padding:10px 12px 100px}
 
-/* ── TERMINAL VIEW ── */
-.terminal {
-  background: var(--bg);
-  font-family: 'Fira Code','Cascadia Code','Consolas',monospace;
-  font-size: 0.75rem;
-  line-height: 1.8;
-  min-height: 300px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  padding: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
+/* ── TERMINAL ── */
+.terminal{
+  background:var(--bg);font-family:'Fira Code','Cascadia Code','Consolas',monospace;
+  font-size:0.73rem;line-height:1.8;min-height:200px;
+  border-radius:10px;border:1px solid var(--border);padding:10px;
+  white-space:pre-wrap;word-break:break-all;
 }
-.log-line { display: flex; gap: 8px; }
-.log-ts { color: #1e3a5f; font-size: 0.65rem; flex-shrink: 0; padding-top: 3px; min-width: 48px; }
+.log-line{display:flex;gap:7px}
+.log-ts{color:#1e3a5f;font-size:0.62rem;flex-shrink:0;padding-top:3px;min-width:44px}
 .c-info{color:#4a6080}.c-found{color:var(--green)}.c-warn{color:var(--orange)}
 .c-vuln{color:var(--red);font-weight:700}.c-ok{color:#00d4a0}
 .c-error{color:#ff6b6b}.c-complete{color:var(--accent);font-weight:700}
-.c-section{color:var(--accent2);font-weight:700}
-.c-progress{color:#60a5fa}
+.c-section{color:var(--accent2);font-weight:700}.c-progress{color:#60a5fa}
 
-/* ── RESULTS VIEW ── */
-.results-view { display: none; }
-.results-view.active { display: block; }
+/* ── RESULTS ── */
+.results-view{display:none}
+.results-view.active{display:block}
 
 /* RISK BANNER */
-.risk-banner {
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.risk-banner{
+  border-radius:12px;padding:14px 16px;margin-bottom:12px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
 }
-.risk-critique { background: rgba(255,71,87,0.12); border: 1px solid rgba(255,71,87,0.4); }
-.risk-élevé    { background: rgba(255,159,67,0.12); border: 1px solid rgba(255,159,67,0.4); }
-.risk-moyen    { background: rgba(255,211,42,0.12); border: 1px solid rgba(255,211,42,0.4); }
-.risk-faible   { background: rgba(0,255,136,0.1);  border: 1px solid rgba(0,255,136,0.3); }
-.risk-title { font-size: 0.75rem; color: var(--muted); margin-bottom: 4px; }
-.risk-value { font-size: 1.5rem; font-weight: 900; letter-spacing: 2px; }
-.risk-critique .risk-value { color: var(--red); }
-.risk-élevé    .risk-value { color: var(--orange); }
-.risk-moyen    .risk-value { color: var(--yellow); }
-.risk-faible   .risk-value { color: var(--green); }
+.risk-critique{background:rgba(255,71,87,0.12);border:1px solid rgba(255,71,87,0.4)}
+.risk-élevé{background:rgba(255,159,67,0.12);border:1px solid rgba(255,159,67,0.4)}
+.risk-moyen{background:rgba(255,211,42,0.12);border:1px solid rgba(255,211,42,0.4)}
+.risk-faible{background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.3)}
+.risk-title{font-size:0.7rem;color:var(--muted);margin-bottom:3px}
+.risk-value{font-size:1.4rem;font-weight:900;letter-spacing:2px}
+.risk-critique .risk-value{color:var(--red)}
+.risk-élevé .risk-value{color:var(--orange)}
+.risk-moyen .risk-value{color:var(--yellow)}
+.risk-faible .risk-value{color:var(--green)}
 
-/* STATS ROW */
-.stats-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  margin-bottom: 14px;
+/* META CHIPS */
+.meta-chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+.meta-chip{
+  background:var(--bg3);border:1px solid var(--border);border-radius:6px;
+  padding:4px 10px;font-size:0.65rem;display:flex;align-items:center;gap:4px;
 }
-.stat-card {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 6px;
-  text-align: center;
+.mc-detected{border-color:rgba(255,159,67,0.5);background:rgba(255,159,67,0.06)}
+.mc-safe{border-color:rgba(0,255,136,0.3);background:rgba(0,255,136,0.05)}
+.mc-warn{border-color:rgba(255,211,42,0.4);background:rgba(255,211,42,0.06)}
+
+/* STATS */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-bottom:10px}
+.stat-card{
+  background:var(--bg3);border:1px solid var(--border);border-radius:10px;
+  padding:9px 5px;text-align:center;
 }
-.stat-num { font-size: 1.5rem; font-weight: 800; display: block; line-height: 1.1; }
-.stat-lbl { font-size: 0.58rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 2px; }
-.sn-red    { color: var(--red); }
-.sn-orange { color: var(--orange); }
-.sn-yellow { color: var(--yellow); }
-.sn-green  { color: var(--green); }
-.sn-accent { color: var(--accent); }
+.stat-num{font-size:1.4rem;font-weight:800;display:block;line-height:1.1}
+.stat-lbl{font-size:0.55rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-top:2px}
+.sn-red{color:var(--red)}.sn-orange{color:var(--orange)}.sn-yellow{color:var(--yellow)}
+.sn-green{color:var(--green)}.sn-accent{color:var(--accent)}.sn-purple{color:#a78bfa}
 
 /* SECTION CARD */
-.section-card {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  margin-bottom: 12px;
-  overflow: hidden;
+.section-card{
+  background:var(--bg3);border:1px solid var(--border);
+  border-radius:12px;margin-bottom:10px;overflow:hidden;
 }
-.section-header {
-  padding: 12px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  user-select: none;
-  background: var(--bg4);
-  transition: background .15s;
+.section-header{
+  padding:10px 13px;display:flex;align-items:center;
+  justify-content:space-between;cursor:pointer;user-select:none;
+  background:var(--bg4);transition:background .15s;
 }
-.section-header:active { background: var(--bg3); }
-.section-htitle {
-  font-size: 0.82rem;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.section-header:active{background:var(--bg3)}
+.section-htitle{font-size:0.8rem;font-weight:700;display:flex;align-items:center;gap:7px}
+.section-count{
+  font-size:0.62rem;background:var(--bg2);border:1px solid var(--border);
+  border-radius:10px;padding:2px 7px;color:var(--muted);
 }
-.section-count {
-  font-size: 0.65rem;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 2px 8px;
-  color: var(--muted);
-}
-.section-body {
-  padding: 12px 14px;
-  display: none;
-}
-.section-body.open { display: block; }
-.chevron { transition: transform .2s; font-size: 0.7rem; color: var(--muted); }
-.chevron.open { transform: rotate(180deg); }
+.section-body{padding:10px 13px;display:none}
+.section-body.open{display:block}
+.chevron{transition:transform .2s;font-size:0.65rem;color:var(--muted)}
+.chevron.open{transform:rotate(180deg)}
 
 /* PORTS TABLE */
-.ports-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
-.ports-table th { padding: 6px 8px; text-align: left; color: var(--muted); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border); }
-.ports-table td { padding: 7px 8px; border-bottom: 1px solid rgba(30,45,69,0.6); vertical-align: top; }
-.ports-table tr:last-child td { border-bottom: none; }
-.port-num { font-weight: 800; font-family: monospace; color: var(--accent); }
-.risk-high   { color: var(--red); font-size: 0.65rem; font-weight: 700; }
-.risk-medium { color: var(--orange); font-size: 0.65rem; font-weight: 700; }
-.risk-low    { color: var(--green); font-size: 0.65rem; font-weight: 700; }
+.ports-table{width:100%;border-collapse:collapse;font-size:0.76rem}
+.ports-table th{
+  padding:5px 7px;text-align:left;color:var(--muted);
+  font-size:0.6rem;text-transform:uppercase;letter-spacing:1px;
+  border-bottom:1px solid var(--border);
+}
+.ports-table td{padding:6px 7px;border-bottom:1px solid rgba(30,45,69,0.6);vertical-align:top}
+.ports-table tr:last-child td{border-bottom:none}
+.port-num{font-weight:800;font-family:monospace;color:var(--accent)}
+.risk-high{color:var(--red);font-size:0.62rem;font-weight:700}
+.risk-medium{color:var(--orange);font-size:0.62rem;font-weight:700}
+.risk-low{color:var(--green);font-size:0.62rem;font-weight:700}
 
 /* VULN LIST */
-.vuln-item {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(30,45,69,0.6);
-  font-size: 0.8rem;
+.vuln-item{
+  display:flex;gap:9px;align-items:flex-start;padding:7px 0;
+  border-bottom:1px solid rgba(30,45,69,0.6);font-size:0.78rem;
 }
-.vuln-item:last-child { border-bottom: none; }
-.vsev {
-  font-size: 0.6rem;
-  font-weight: 800;
-  padding: 2px 7px;
-  border-radius: 4px;
-  text-transform: uppercase;
-  flex-shrink: 0;
-  margin-top: 2px;
-  letter-spacing: 0.5px;
+.vuln-item:last-child{border-bottom:none}
+.vsev{
+  font-size:0.57rem;font-weight:800;padding:2px 6px;border-radius:4px;
+  text-transform:uppercase;flex-shrink:0;margin-top:2px;letter-spacing:0.5px;
 }
-.vsev-critical { background: rgba(255,71,87,0.2); color: var(--red); border: 1px solid rgba(255,71,87,0.4); }
-.vsev-high     { background: rgba(255,159,67,0.2); color: var(--orange); border: 1px solid rgba(255,159,67,0.4); }
-.vsev-medium   { background: rgba(255,211,42,0.2); color: var(--yellow); border: 1px solid rgba(255,211,42,0.4); }
-.vsev-low      { background: rgba(0,255,136,0.12); color: var(--green); border: 1px solid rgba(0,255,136,0.3); }
-.vuln-name { flex: 1; line-height: 1.4; }
-.vuln-detail { font-size: 0.68rem; color: var(--muted); margin-top: 2px; font-family: monospace; }
+.vsev-critical{background:rgba(255,71,87,0.2);color:var(--red);border:1px solid rgba(255,71,87,0.4)}
+.vsev-high{background:rgba(255,159,67,0.2);color:var(--orange);border:1px solid rgba(255,159,67,0.4)}
+.vsev-medium{background:rgba(255,211,42,0.2);color:var(--yellow);border:1px solid rgba(255,211,42,0.4)}
+.vsev-low{background:rgba(0,255,136,0.12);color:var(--green);border:1px solid rgba(0,255,136,0.3)}
+.vsev-info{background:rgba(0,229,255,0.1);color:var(--accent);border:1px solid rgba(0,229,255,0.2)}
+.vuln-name{flex:1;line-height:1.4}
+.vuln-detail{font-size:0.65rem;color:var(--muted);margin-top:2px;font-family:monospace;word-break:break-all}
 
-/* DIR / TECH / DNS items */
-.list-item {
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(30,45,69,0.4);
-  font-size: 0.78rem;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* LIST ITEMS */
+.list-item{
+  padding:5px 0;border-bottom:1px solid rgba(30,45,69,0.4);
+  font-size:0.76rem;display:flex;align-items:center;gap:7px;
 }
-.list-item:last-child { border-bottom: none; }
-.item-url { font-family: monospace; color: var(--accent); flex: 1; word-break: break-all; font-size: 0.72rem; }
-.item-status { font-size: 0.65rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
-.s200 { background: rgba(0,255,136,0.15); color: var(--green); }
-.s403 { background: rgba(255,159,67,0.15); color: var(--orange); }
-.s401 { background: rgba(255,71,87,0.15); color: var(--red); }
-.s301,.s302 { background: rgba(96,165,250,0.15); color: #60a5fa; }
+.list-item:last-child{border-bottom:none}
+.item-url{font-family:monospace;color:var(--accent);flex:1;word-break:break-all;font-size:0.7rem}
+.item-status{font-size:0.62rem;font-weight:700;padding:2px 5px;border-radius:4px;flex-shrink:0}
+.s200{background:rgba(0,255,136,0.15);color:var(--green)}
+.s403{background:rgba(255,159,67,0.15);color:var(--orange)}
+.s401{background:rgba(255,71,87,0.15);color:var(--red)}
+.s301,.s302{background:rgba(96,165,250,0.15);color:#60a5fa}
 
-/* DNS table */
-.dns-row { display: flex; gap: 8px; padding: 5px 0; border-bottom: 1px solid rgba(30,45,69,0.4); font-size: 0.75rem; }
-.dns-row:last-child { border-bottom: none; }
-.dns-type { font-weight: 700; color: var(--accent2); min-width: 50px; font-size: 0.68rem; font-family: monospace; }
-.dns-val { flex: 1; word-break: break-all; color: var(--text); }
+/* DNS */
+.dns-row{display:flex;gap:7px;padding:4px 0;border-bottom:1px solid rgba(30,45,69,0.4);font-size:0.72rem}
+.dns-row:last-child{border-bottom:none}
+.dns-type{font-weight:700;color:var(--accent2);min-width:46px;font-size:0.65rem;font-family:monospace}
+.dns-val{flex:1;word-break:break-all;color:var(--text)}
 
 /* DB CARD */
-.db-card {
-  background: rgba(255,71,87,0.06);
-  border: 1.5px solid rgba(255,71,87,0.4);
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 12px;
+.db-card{
+  background:rgba(255,71,87,0.06);border:1.5px solid rgba(255,71,87,0.4);
+  border-radius:12px;padding:12px;margin-bottom:10px;
 }
-.db-title { font-size: 0.85rem; font-weight: 800; color: var(--red); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
-.db-info { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-.db-field { background: var(--bg2); border-radius: 8px; padding: 8px 10px; }
-.db-field-label { font-size: 0.6rem; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
-.db-field-value { font-size: 0.82rem; font-weight: 700; color: var(--text); font-family: monospace; word-break: break-all; }
-.db-tables { display: flex; flex-wrap: wrap; gap: 6px; }
-.db-table-tag {
-  background: rgba(255,71,87,0.1);
-  border: 1px solid rgba(255,71,87,0.3);
-  border-radius: 6px;
-  padding: 3px 10px;
-  font-size: 0.72rem;
-  font-family: monospace;
-  color: var(--red);
+.db-title{font-size:0.82rem;font-weight:800;color:var(--red);margin-bottom:9px;display:flex;align-items:center;gap:7px}
+.db-info{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:9px}
+.db-field{background:var(--bg2);border-radius:8px;padding:7px 9px}
+.db-field-label{font-size:0.58rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:2px}
+.db-field-value{font-size:0.78rem;font-weight:700;color:var(--text);font-family:monospace;word-break:break-all}
+.db-tables{display:flex;flex-wrap:wrap;gap:5px}
+.db-table-tag{
+  background:rgba(255,71,87,0.1);border:1px solid rgba(255,71,87,0.3);
+  border-radius:6px;padding:3px 9px;font-size:0.68rem;font-family:monospace;color:var(--red);
 }
-.db-table-tag.sensitive {
-  background: rgba(255,71,87,0.25);
-  border-color: var(--red);
-  font-weight: 700;
+.db-table-tag.sensitive{background:rgba(255,71,87,0.25);border-color:var(--red);font-weight:700}
+
+/* CMS CARD */
+.cms-card{
+  background:rgba(124,58,237,0.06);border:1px solid rgba(124,58,237,0.3);
+  border-radius:10px;padding:12px;margin-bottom:10px;
+}
+.cms-title{font-size:0.82rem;font-weight:700;color:#a78bfa;margin-bottom:8px}
+.plugin-tag{
+  display:inline-block;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);
+  border-radius:5px;padding:2px 8px;font-size:0.65rem;font-family:monospace;
+  color:#c4b5fd;margin:2px;
 }
 
-/* DOWNLOAD BUTTONS */
-.download-bar {
-  position: fixed;
-  bottom: 0; left: 0; right: 0;
-  padding: 10px 14px;
-  background: var(--bg2);
-  border-top: 1px solid var(--border);
-  display: none;
-  gap: 8px;
-  z-index: 100;
-  backdrop-filter: blur(10px);
+/* WAF BADGE */
+.waf-detected{
+  display:inline-flex;align-items:center;gap:5px;
+  background:rgba(255,159,67,0.1);border:1px solid rgba(255,159,67,0.35);
+  border-radius:8px;padding:5px 12px;font-size:0.72rem;font-weight:700;color:var(--orange);
+  margin-bottom:10px;
 }
-.download-bar.visible { display: flex; }
-.btn-dl {
-  flex: 1;
-  padding: 12px 10px;
-  border-radius: 10px;
-  border: none;
-  font-weight: 800;
-  font-size: 0.8rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  transition: all .15s;
-  letter-spacing: 0.5px;
+.waf-clean{
+  display:inline-flex;align-items:center;gap:5px;
+  background:rgba(0,255,136,0.06);border:1px solid rgba(0,255,136,0.25);
+  border-radius:8px;padding:5px 12px;font-size:0.72rem;font-weight:700;color:var(--green);
+  margin-bottom:10px;
 }
-.btn-dl:active { transform: scale(0.96); }
-.btn-dl-txt { background: linear-gradient(135deg,var(--accent),#0099bb); color: #000; }
-.btn-dl-db  { background: linear-gradient(135deg,var(--red),#c0392b); color: #fff; }
-.btn-dl-db.hidden { display: none; }
+
+/* EMAIL SECURITY */
+.email-grade{
+  display:inline-block;width:38px;height:38px;border-radius:8px;
+  font-size:1.1rem;font-weight:900;text-align:center;line-height:38px;flex-shrink:0;
+}
+.grade-A{background:rgba(0,255,136,0.2);color:var(--green);border:2px solid var(--green)}
+.grade-B{background:rgba(0,229,255,0.15);color:var(--accent);border:2px solid var(--accent)}
+.grade-C{background:rgba(255,211,42,0.15);color:var(--yellow);border:2px solid var(--yellow)}
+.grade-D{background:rgba(255,159,67,0.15);color:var(--orange);border:2px solid var(--orange)}
+.grade-F{background:rgba(255,71,87,0.15);color:var(--red);border:2px solid var(--red)}
+.email-checks{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+.email-check{
+  display:flex;align-items:center;gap:5px;font-size:0.72rem;
+  background:var(--bg2);border-radius:7px;padding:6px 9px;
+}
+.check-ok{color:var(--green)}.check-fail{color:var(--red)}
+
+/* JS SECRETS */
+.secret-item{
+  background:rgba(255,71,87,0.06);border:1px solid rgba(255,71,87,0.2);
+  border-radius:7px;padding:7px 10px;margin-bottom:5px;font-size:0.72rem;
+}
+.secret-type{
+  font-size:0.6rem;font-weight:700;text-transform:uppercase;color:var(--red);margin-bottom:3px;
+}
+.secret-val{font-family:monospace;word-break:break-all;color:var(--text)}
+
+/* DOWNLOAD BAR */
+.download-bar{
+  position:fixed;bottom:0;left:0;right:0;padding:8px 12px;
+  background:var(--bg2);border-top:1px solid var(--border);
+  display:none;gap:6px;z-index:100;backdrop-filter:blur(10px);
+}
+.download-bar.visible{display:flex}
+.btn-dl{
+  flex:1;padding:11px 8px;border-radius:10px;border:none;font-weight:800;
+  font-size:0.75rem;cursor:pointer;display:flex;align-items:center;
+  justify-content:center;gap:5px;transition:all .15s;letter-spacing:0.3px;
+}
+.btn-dl:active{transform:scale(0.96)}
+.btn-dl-txt{background:linear-gradient(135deg,var(--accent),#0099bb);color:#000}
+.btn-dl-html{background:linear-gradient(135deg,#7c3aed,#4c1d95);color:#fff}
+.btn-dl-db{background:linear-gradient(135deg,var(--red),#c0392b);color:#fff}
+.btn-dl-db.hidden,.btn-dl-html.hidden{display:none}
 
 /* EMPTY STATE */
-.empty-state {
-  text-align: center;
-  padding: 60px 20px;
-  color: var(--muted);
-}
-.empty-state .icon { font-size: 3rem; margin-bottom: 12px; opacity: 0.4; }
-.empty-state p { font-size: 0.85rem; line-height: 1.6; }
+.empty-state{text-align:center;padding:50px 20px;color:var(--muted)}
+.empty-state .icon{font-size:2.8rem;margin-bottom:10px;opacity:0.4}
+.empty-state p{font-size:0.82rem;line-height:1.7}
 
 /* ANIMATIONS */
-@keyframes fadeUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-.fade-up { animation: fadeUp .25s ease; }
-@keyframes spin { to{transform:rotate(360deg)} }
-.spin { animation: spin 1s linear infinite; display: inline-block; }
+@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.fade-up{animation:fadeUp .25s ease}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin 1s linear infinite;display:inline-block}
 
 /* TAG */
-.tag { display:inline-block; padding:2px 7px; border-radius:4px; font-size:0.62rem; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
-.tag-tech { background: rgba(124,58,237,0.15); color: #a78bfa; border: 1px solid rgba(124,58,237,0.3); }
-
-/* Scrollbar */
-.content::-webkit-scrollbar { width: 3px; }
-.content::-webkit-scrollbar-thumb { background: var(--border); }
+.tag{display:inline-block;padding:2px 7px;border-radius:4px;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
+.tag-tech{background:rgba(124,58,237,0.15);color:#a78bfa;border:1px solid rgba(124,58,237,0.3)}
 </style>
 </head>
 <body>
@@ -465,7 +332,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
   <!-- HEADER -->
   <div class="header">
     <div class="logo">UHQKYRA</div>
-    <div class="logo-sub">Security Scanner · v2.0</div>
+    <div class="logo-sub">Security Scanner · v3.0 · 12 Modules</div>
   </div>
 
   <!-- SCAN BOX -->
@@ -479,20 +346,24 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
         <span id="scan-label">SCANNER</span>
       </button>
     </div>
-    <div class="scan-note">⚠️ Utilise uniquement sur des cibles autorisées</div>
+    <div class="scan-note">⚠️ Usage autorisé uniquement · WHOIS · DNS · Ports · WAF · CMS · JS · SSL · Dirs · API · Vulns</div>
   </div>
 
   <!-- PROGRESS -->
   <div id="progress-section" class="progress-section">
     <div class="progress-steps" id="progress-steps">
-      <div class="pstep" id="ps-whois">WHOIS</div>
-      <div class="pstep" id="ps-dns">DNS</div>
-      <div class="pstep" id="ps-ports">PORTS</div>
-      <div class="pstep" id="ps-http">HTTP</div>
-      <div class="pstep" id="ps-ssl">SSL</div>
-      <div class="pstep" id="ps-dirs">DIRS</div>
-      <div class="pstep" id="ps-vulns">VULNS</div>
-      <div class="pstep" id="ps-done">DONE</div>
+      <div class="pstep" id="ps-1">WHOIS</div>
+      <div class="pstep" id="ps-2">DNS</div>
+      <div class="pstep" id="ps-3">PORTS</div>
+      <div class="pstep" id="ps-4">WAF</div>
+      <div class="pstep" id="ps-5">HTTP</div>
+      <div class="pstep" id="ps-6">SSL</div>
+      <div class="pstep" id="ps-7">CMS</div>
+      <div class="pstep" id="ps-8">DIRS</div>
+      <div class="pstep" id="ps-9">JS</div>
+      <div class="pstep" id="ps-10">API</div>
+      <div class="pstep" id="ps-11">VULNS</div>
+      <div class="pstep" id="ps-12">DONE</div>
     </div>
     <div class="progress-bar-bg">
       <div id="progress-fill" class="progress-bar-fill"></div>
@@ -510,203 +381,173 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-
 
   <!-- CONTENT -->
   <div class="content" id="content">
-
-    <!-- RESULTS VIEW -->
     <div id="view-results" class="results-view active">
       <div class="empty-state" id="empty-state">
         <div class="icon">⚡</div>
-        <p>Entre une URL ci-dessus<br>et lance le scan complet.<br><br>
-        <span style="font-size:0.75rem;color:var(--muted)">Ports · DNS · HTTP · SSL · Dirs · Vulnérabilités</span></p>
+        <p>Entre une URL et lance le scan complet.<br><br>
+        <span style="font-size:0.72rem;color:var(--muted)">
+          WHOIS · DNS · Ports · WAF · HTTP · SSL · CMS<br>
+          Dirs · JavaScript · API · Vulnérabilités · Email
+        </span></p>
       </div>
-
-      <!-- Populated by JS -->
       <div id="results-content" style="display:none"></div>
     </div>
-
-    <!-- TERMINAL VIEW -->
     <div id="view-terminal" style="display:none">
       <div id="terminal" class="terminal"></div>
     </div>
-
   </div>
 
   <!-- DOWNLOAD BAR -->
   <div id="download-bar" class="download-bar">
-    <button class="btn-dl btn-dl-txt" id="btn-dl-txt" onclick="downloadTxt()">
-      ⬇️ Télécharger .TXT
-    </button>
-    <button class="btn-dl btn-dl-db hidden" id="btn-dl-db" onclick="downloadDb()">
-      🗄️ Télécharger DB
-    </button>
+    <button class="btn-dl btn-dl-txt" onclick="downloadTxt()">⬇️ .TXT</button>
+    <button class="btn-dl btn-dl-html hidden" id="btn-dl-html" onclick="downloadHtml()">📄 .HTML</button>
+    <button class="btn-dl btn-dl-db hidden" id="btn-dl-db" onclick="downloadDb()">🗄️ DB</button>
   </div>
 
 </div><!-- .page -->
 
 <script>
-// ─── STATE ───────────────────────────────────────────────────
-let scanning = false;
-let curScanId = null;
-let curSrc = null;
-let scanResults = null;
-const STEP_LABELS = ['ps-whois','ps-dns','ps-ports','ps-http','ps-ssl','ps-dirs','ps-vulns','ps-done'];
+// ─── STATE ───────────────────────────────────────────────────────
+let scanning = false, curScanId = null, curSrc = null, scanResults = null;
+const TOTAL = 12;
+const STEP_IDS = ['ps-1','ps-2','ps-3','ps-4','ps-5','ps-6','ps-7','ps-8','ps-9','ps-10','ps-11','ps-12'];
 
-// ─── TABS ─────────────────────────────────────────────────────
-function showTab(name) {
+// ─── TABS ─────────────────────────────────────────────────────────
+function showTab(n) {
   document.querySelectorAll('.vtab').forEach(t=>t.classList.remove('active'));
-  document.getElementById('tab-'+name).classList.add('active');
-  document.getElementById('view-results').style.display = name==='results'?'block':'none';
-  document.getElementById('view-terminal').style.display = name==='terminal'?'block':'none';
-  if(name==='terminal') scrollTerminal();
+  document.getElementById('tab-'+n).classList.add('active');
+  document.getElementById('view-results').style.display = n==='results'?'block':'none';
+  document.getElementById('view-terminal').style.display = n==='terminal'?'block':'none';
+  if(n==='terminal') scrollTerm();
 }
 
-// ─── TERMINAL ────────────────────────────────────────────────
+// ─── TERMINAL ────────────────────────────────────────────────────
 function log(msg, type='info') {
   const term = document.getElementById('terminal');
-  const line = document.createElement('div');
-  line.className = 'log-line';
+  const ln = document.createElement('div');
+  ln.className = 'log-line';
   const ts = new Date().toLocaleTimeString('fr',{hour12:false});
-  line.innerHTML = `<span class="log-ts">${ts}</span><span class="c-${type}">${esc(msg)}</span>`;
-  term.appendChild(line);
-  scrollTerminal();
+  ln.innerHTML = `<span class="log-ts">${ts}</span><span class="c-${type}">${esc(msg)}</span>`;
+  term.appendChild(ln);
+  if(term.children.length > 2000) term.removeChild(term.firstChild);
+  scrollTerm();
 }
-function scrollTerminal() {
-  const t = document.getElementById('terminal');
-  t.scrollTop = t.scrollHeight;
-}
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function scrollTerm(){const t=document.getElementById('terminal');t.scrollTop=t.scrollHeight}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 
-// ─── PROGRESS ────────────────────────────────────────────────
+// ─── PROGRESS ────────────────────────────────────────────────────
 function setProgress(step, total, label) {
   const pct = Math.round((step/total)*100);
   document.getElementById('progress-fill').style.width = pct+'%';
-  document.getElementById('progress-label').textContent = label || '';
-
-  STEP_LABELS.forEach((id, i) => {
+  document.getElementById('progress-label').textContent = label||'';
+  STEP_IDS.forEach((id,i) => {
     const el = document.getElementById(id);
     if(!el) return;
-    if(i < step) el.className = 'pstep done';
-    else if(i === step-1) el.className = 'pstep active';
-    else el.className = 'pstep';
+    if(i < step) el.className='pstep done';
+    else if(i===step-1) el.className='pstep active';
+    else el.className='pstep';
   });
 }
 
-// ─── SCAN ─────────────────────────────────────────────────────
-function toggleScan() {
-  if(scanning) { stopScan(); return; }
-  startScan();
-}
+// ─── SCAN ────────────────────────────────────────────────────────
+function toggleScan(){scanning?stopScan():startScan()}
 
 function startScan() {
   const url = document.getElementById('url-input').value.trim();
-  if(!url) {
-    document.getElementById('url-input').focus();
-    return;
-  }
-
-  scanning = true;
-  scanResults = null;
-  document.getElementById('terminal').innerHTML = '';
-  document.getElementById('results-content').style.display = 'none';
-  document.getElementById('empty-state').style.display = 'none';
+  if(!url){document.getElementById('url-input').focus();return}
+  scanning=true; scanResults=null;
+  document.getElementById('terminal').innerHTML='';
+  document.getElementById('results-content').style.display='none';
+  document.getElementById('empty-state').style.display='none';
   document.getElementById('download-bar').classList.remove('visible');
-  document.getElementById('badge-vulns').style.display = 'none';
+  document.getElementById('badge-vulns').style.display='none';
+  document.getElementById('btn-dl-db').classList.add('hidden');
+  document.getElementById('btn-dl-html').classList.add('hidden');
 
-  // UI scan mode
-  const btn = document.getElementById('btn-scan');
-  btn.className = 'btn-scan scanning';
-  document.getElementById('scan-icon').className = 'spin';
-  document.getElementById('scan-icon').textContent = '⟳';
-  document.getElementById('scan-label').textContent = 'STOP';
-
+  const btn=document.getElementById('btn-scan');
+  btn.className='btn-scan scanning';
+  document.getElementById('scan-icon').className='spin';
+  document.getElementById('scan-icon').textContent='⟳';
+  document.getElementById('scan-label').textContent='STOP';
   document.getElementById('progress-section').classList.add('visible');
-  setProgress(0, 8, 'Connexion...');
+  setProgress(0,TOTAL,'Connexion...');
 
-  fetch('/api/fullscan', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({url})
-  })
+  fetch('/api/fullscan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})})
   .then(r=>r.json())
-  .then(data => {
-    if(data.error) { log('❌ '+data.error,'error'); stopScan(); return; }
-    curScanId = data.scan_id;
-    const src = new EventSource('/api/stream/'+data.scan_id);
-    curSrc = src;
-
-    src.onmessage = e => {
-      const evt = JSON.parse(e.data);
-
-      // Routing messages
-      if(evt.type === 'progress') {
-        if(evt.step !== undefined) setProgress(evt.step, evt.total||8, evt.label||'');
-        return;
-      }
-      if(evt.type === 'section') {
-        log(evt.message, 'section');
-        return;
-      }
-      if(evt.type === 'done_full') {
-        // Scan complete — load results
-        fetch('/api/fullscan/results/'+curScanId)
-          .then(r=>r.json())
-          .then(res => {
-            scanResults = res;
-            renderResults(res);
-            stopScan(true);
-          });
-        return;
-      }
-      if(evt.type === 'done' || evt.type === 'keepalive') return;
-
-      if(evt.message) log(evt.message, evt.type||'info');
+  .then(data=>{
+    if(data.error){log('❌ '+data.error,'error');stopScan();return}
+    curScanId=data.scan_id;
+    const src=new EventSource('/api/stream/'+data.scan_id);
+    curSrc=src;
+    src.onmessage=e=>{
+      const evt=JSON.parse(e.data);
+      if(evt.type==='progress'){if(evt.step!==undefined)setProgress(evt.step,evt.total||TOTAL,evt.label||'');return}
+      if(evt.type==='section'){log(evt.message,'section');return}
+      if(evt.type==='done_full'){
+        fetch('/api/fullscan/results/'+curScanId).then(r=>r.json()).then(res=>{
+          scanResults=res; renderResults(res); stopScan(true);
+        });return}
+      if(evt.type==='done'||evt.type==='keepalive')return;
+      if(evt.message)log(evt.message,evt.type||'info');
     };
-
-    src.onerror = () => { src.close(); if(scanning) { log('⚠️ Stream interrompu','warn'); stopScan(); } };
+    src.onerror=()=>{src.close();if(scanning){log('⚠️ Stream interrompu','warn');stopScan()}};
   })
-  .catch(e => { log('❌ Erreur: '+e,'error'); stopScan(); });
+  .catch(e=>{log('❌ '+e,'error');stopScan()});
 }
 
 function stopScan(completed=false) {
-  if(curSrc) { curSrc.close(); curSrc=null; }
-  scanning = false;
-
-  const btn = document.getElementById('btn-scan');
-  btn.className = 'btn-scan';
-  document.getElementById('scan-icon').className = '';
-  document.getElementById('scan-icon').textContent = '⚡';
-  document.getElementById('scan-label').textContent = 'SCANNER';
-
-  if(!completed) {
-    document.getElementById('progress-section').classList.remove('visible');
-  } else {
-    setProgress(8, 8, '✅ Scan terminé !');
-  }
+  if(curSrc){curSrc.close();curSrc=null}
+  scanning=false;
+  const btn=document.getElementById('btn-scan');
+  btn.className='btn-scan';
+  document.getElementById('scan-icon').className='';
+  document.getElementById('scan-icon').textContent='⚡';
+  document.getElementById('scan-label').textContent='SCANNER';
+  if(!completed)document.getElementById('progress-section').classList.remove('visible');
+  else setProgress(TOTAL,TOTAL,'✅ Scan terminé !');
 }
 
-// ─── RENDER RESULTS ──────────────────────────────────────────
+// ─── RENDER RESULTS ──────────────────────────────────────────────
 function renderResults(res) {
-  const container = document.getElementById('results-content');
-  const s = res.summary || {};
-  container.innerHTML = '';
-  container.style.display = 'block';
-  document.getElementById('empty-state').style.display = 'none';
+  const c=document.getElementById('results-content');
+  const s=res.summary||{};
+  c.innerHTML=''; c.style.display='block';
+  document.getElementById('empty-state').style.display='none';
 
   // Risk banner
-  const risk = (s.overall_risk || 'FAIBLE').toLowerCase();
-  container.innerHTML += `
+  const risk=(s.overall_risk||'FAIBLE').toLowerCase();
+  c.innerHTML+=`
     <div class="risk-banner risk-${risk} fade-up">
       <div>
         <div class="risk-title">Niveau de risque global</div>
         <div class="risk-value">${s.overall_risk||'?'}</div>
-        <div style="font-size:0.7rem;color:var(--muted);margin-top:4px">Score: ${s.risk_score||0} | ${res.domain} (${res.ip})</div>
+        <div style="font-size:0.67rem;color:var(--muted);margin-top:3px">
+          Score: ${s.risk_score||0} · ${res.domain} (${res.ip})
+        </div>
       </div>
-      <div style="font-size:2.5rem">
-        ${ risk==='critique'?'🚨' : risk==='élevé'?'⚠️' : risk==='moyen'?'⚡':'✅' }
+      <div style="font-size:2.2rem">
+        ${risk==='critique'?'🚨':risk==='élevé'?'⚠️':risk==='moyen'?'⚡':'✅'}
       </div>
     </div>`;
 
-  // Stats
-  container.innerHTML += `
+  // Meta chips: WAF, CMS, Email grade, JS secrets
+  let chips='<div class="meta-chips fade-up">';
+  const waf=res.waf||{};
+  if(waf.detected)
+    chips+=`<div class="meta-chip mc-detected">🛡️ WAF: ${esc(waf.waf_name||'?')}</div>`;
+  else
+    chips+=`<div class="meta-chip mc-safe">🛡️ Pas de WAF</div>`;
+  const cms=res.cms||{};
+  if(cms.cms) chips+=`<div class="meta-chip mc-warn">🎯 CMS: ${esc(cms.cms)}${cms.version?' v'+esc(cms.version):''}</div>`;
+  const eg=s.email_grade||'?';
+  chips+=`<div class="meta-chip ${eg==='A'||eg==='B'?'mc-safe':eg==='F'||eg==='D'?'mc-detected':'mc-warn'}">📧 Email: ${eg}</div>`;
+  if(s.js_secrets>0) chips+=`<div class="meta-chip mc-detected">🔑 ${s.js_secrets} secret(s) JS</div>`;
+  if(s.api_endpoints>0) chips+=`<div class="meta-chip">🔗 ${s.api_endpoints} API endpoints</div>`;
+  chips+='</div>';
+  c.innerHTML+=chips;
+
+  // Stats row
+  c.innerHTML+=`
     <div class="stats-row fade-up">
       <div class="stat-card"><span class="stat-num sn-red">${s.vulns_critical||0}</span><div class="stat-lbl">Critical</div></div>
       <div class="stat-card"><span class="stat-num sn-orange">${s.vulns_high||0}</span><div class="stat-lbl">High</div></div>
@@ -714,140 +555,209 @@ function renderResults(res) {
       <div class="stat-card"><span class="stat-num sn-green">${s.dirs_found||0}</span><div class="stat-lbl">Dirs</div></div>
     </div>`;
 
-  // DATABASE (priorité si trouvée)
-  if(res.database && res.database.version) {
-    const db = res.database;
-    const tables = db.tables || [];
-    const sensitiveWords = ['user','admin','password','account','credential','secret','token','auth'];
-    container.innerHTML += `
+  // DB card
+  if(res.database&&res.database.version) {
+    const db=res.database;
+    const tables=db.tables||[];
+    const sensitiveWords=['user','admin','password','account','credential','secret','token','auth','passwd'];
+    c.innerHTML+=`
       <div class="db-card fade-up">
         <div class="db-title">🚨 BASE DE DONNÉES EXTRAITE</div>
         <div class="db-info">
-          <div class="db-field"><div class="db-field-label">Type</div><div class="db-field-value">${db.db_type||'?'}</div></div>
-          <div class="db-field"><div class="db-field-label">Version</div><div class="db-field-value">${(db.version||'?').slice(0,30)}</div></div>
-          <div class="db-field"><div class="db-field-label">Utilisateur</div><div class="db-field-value">${db.current_user||'?'}</div></div>
-          <div class="db-field"><div class="db-field-label">Base active</div><div class="db-field-value">${db.current_db||'?'}</div></div>
+          <div class="db-field"><div class="db-field-label">Type</div><div class="db-field-value">${esc(db.db_type||'?')}</div></div>
+          <div class="db-field"><div class="db-field-label">Version</div><div class="db-field-value">${esc((db.version||'?').slice(0,25))}</div></div>
+          <div class="db-field"><div class="db-field-label">Utilisateur</div><div class="db-field-value">${esc(db.current_user||'?')}</div></div>
+          <div class="db-field"><div class="db-field-label">Base active</div><div class="db-field-value">${esc(db.current_db||'?')}</div></div>
         </div>
-        ${tables.length ? `<div style="font-size:0.7rem;color:var(--muted);margin-bottom:8px">Tables trouvées :</div>
-          <div class="db-tables">
-            ${tables.map(t=>{
-              const sens = sensitiveWords.some(w=>t.toLowerCase().includes(w));
-              return `<div class="db-table-tag ${sens?'sensitive':''}">${t}${sens?' 🔑':''}</div>`;
-            }).join('')}
-          </div>` : ''}
+        ${tables.length?`<div style="font-size:0.67rem;color:var(--muted);margin-bottom:7px">Tables (${tables.length}):</div>
+          <div class="db-tables">${tables.map(t=>{
+            const sens=sensitiveWords.some(w=>t.toLowerCase().includes(w));
+            return `<div class="db-table-tag ${sens?'sensitive':''}">${esc(t)}${sens?' 🔑':''}</div>`;
+          }).join('')}</div>`:''
+        }
       </div>`;
     document.getElementById('btn-dl-db').classList.remove('hidden');
   }
 
-  // VULNERABILITIES
-  const vulns = res.vulnerabilities || [];
-  if(vulns.length) {
-    const sev_order = {critical:0,high:1,medium:2,low:3};
-    const sorted = [...vulns].sort((a,b)=>(sev_order[a.severity]||4)-(sev_order[b.severity]||4));
-    let vulnHTML = sorted.map(v=>`
+  // Vulnerabilities
+  const vulns=res.vulnerabilities||[];
+  const importantVulns=vulns.filter(v=>v.severity!=='info');
+  if(importantVulns.length) {
+    const sev_ord={critical:0,high:1,medium:2,low:3};
+    const sorted=[...importantVulns].sort((a,b)=>(sev_ord[a.severity]||4)-(sev_ord[b.severity]||4));
+    const vulnHTML=sorted.map(v=>`
       <div class="vuln-item">
         <div class="vsev vsev-${v.severity||'low'}">${v.severity||'?'}</div>
         <div>
           <div class="vuln-name">${esc(v.name||'')}</div>
-          ${v.detail?`<div class="vuln-detail">${esc(v.detail.slice(0,100))}</div>`:''}
+          ${v.detail?`<div class="vuln-detail">${esc(String(v.detail).slice(0,120))}</div>`:''}
         </div>
       </div>`).join('');
-
-    container.innerHTML += buildSection('💥', `Vulnérabilités`, vulns.length, vulnHTML, true);
-
-    // Badge
-    const badge = document.getElementById('badge-vulns');
-    badge.textContent = vulns.length;
-    badge.style.display = 'inline-block';
+    c.innerHTML+=buildSection('💥',`Vulnérabilités`,importantVulns.length,vulnHTML,true);
+    const badge=document.getElementById('badge-vulns');
+    badge.textContent=importantVulns.length;
+    badge.style.display='inline-block';
   }
 
-  // OPEN PORTS
-  const ports = (res.ports||[]).filter(p=>p.state==='open');
+  // JS Secrets
+  const js=res.js||{};
+  if(js.secrets&&js.secrets.length) {
+    const jsHTML=js.secrets.map(s=>`
+      <div class="secret-item">
+        <div class="secret-type">${esc(s.type||'?')}</div>
+        <div class="secret-val">${esc((s.value||'').slice(0,200))}</div>
+        <div style="font-size:0.6rem;color:var(--muted);margin-top:3px">Source: ${esc((s.source||'').split('/').pop())}</div>
+      </div>`).join('')+
+    (js.endpoints&&js.endpoints.length?`<div style="margin-top:10px;font-size:0.7rem;color:var(--muted);margin-bottom:5px">Endpoints API dans les JS:</div>`+
+      js.endpoints.slice(0,15).map(ep=>`<div class="list-item"><div class="item-url">${esc(ep)}</div></div>`).join(''):'');
+    c.innerHTML+=buildSection('🔑','Secrets & Endpoints JS',js.secrets.length,jsHTML,true);
+  } else if(js.endpoints&&js.endpoints.length) {
+    const epHTML=js.endpoints.slice(0,20).map(ep=>
+      `<div class="list-item"><div class="item-url">${esc(ep)}</div></div>`
+    ).join('');
+    c.innerHTML+=buildSection('🔗',`Endpoints API (JS)`,js.endpoints.length,epHTML);
+  }
+
+  // CMS section
+  if(cms.cms) {
+    let cmsHTML=`<div class="cms-card">
+      <div class="cms-title">🎯 ${esc(cms.cms)}${cms.version?' <small>v'+esc(cms.version)+'</small>':''}</div>`;
+    if(cms.login_pages&&cms.login_pages.length) {
+      cmsHTML+=`<div style="font-size:0.7rem;color:var(--muted);margin-bottom:5px">Pages login:</div>`;
+      cms.login_pages.slice(0,5).forEach(lp=>{
+        cmsHTML+=`<div class="list-item"><div class="item-url">${esc(lp)}</div></div>`;
+      });
+    }
+    if(cms.plugins&&cms.plugins.length) {
+      cmsHTML+=`<div style="font-size:0.7rem;color:var(--muted);margin:8px 0 5px">Plugins (${cms.plugins.length}):</div>`;
+      cmsHTML+=cms.plugins.map(p=>`<span class="plugin-tag">${esc(p.name)} v${esc(p.version)}</span>`).join('');
+    }
+    cmsHTML+='</div>';
+    c.innerHTML+=buildSection('🎯',`CMS: ${cms.cms}`,1,cmsHTML);
+  }
+
+  // Email security section
+  const emailSec=res.email_security||{};
+  if(emailSec.spf||emailSec.dmarc||emailSec.dkim) {
+    const grade=emailSec.grade||'?';
+    const spfOk=emailSec.spf&&emailSec.spf.found;
+    const dmarcOk=emailSec.dmarc&&emailSec.dmarc.found;
+    const dkimOk=emailSec.dkim&&emailSec.dkim.found;
+    const emailHTML=`
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+        <div class="email-grade grade-${grade}">${grade}</div>
+        <div>
+          <div style="font-weight:700;font-size:0.82rem">Sécurité Email</div>
+          <div style="font-size:0.68rem;color:var(--muted)">${emailSec.score||0}/10 points</div>
+        </div>
+      </div>
+      <div class="email-checks">
+        <div class="email-check ${spfOk?'check-ok':'check-fail'}">${spfOk?'✅':'❌'} SPF ${spfOk?emailSec.spf.policy||'ok':'absent'}</div>
+        <div class="email-check ${dmarcOk?'check-ok':'check-fail'}">${dmarcOk?'✅':'❌'} DMARC ${dmarcOk?'p='+emailSec.dmarc.policy:'absent'}</div>
+        <div class="email-check ${dkimOk?'check-ok':'check-fail'}">${dkimOk?'✅':'❌'} DKIM ${dkimOk?emailSec.dkim.selectors.slice(0,2).join(', '):'absent'}</div>
+        <div class="email-check ${emailSec.mx&&emailSec.mx.found?'check-ok':'check-fail'}">${emailSec.mx&&emailSec.mx.found?'✅':'❌'} MX ${emailSec.mx&&emailSec.mx.records?emailSec.mx.records.length+' serveur(s)':'absent'}</div>
+      </div>`;
+    c.innerHTML+=buildSection('📧','Sécurité Email',1,emailHTML);
+  }
+
+  // Open ports
+  const ports=(res.ports||[]).filter(p=>p.state==='open');
   if(ports.length) {
-    let html = `<table class="ports-table">
+    const pHTML=`<table class="ports-table">
       <tr><th>Port</th><th>Service</th><th>Risque</th><th>Banner</th></tr>
       ${ports.map(p=>`<tr>
         <td class="port-num">${p.port}</td>
-        <td>${p.service||'?'}</td>
+        <td>${esc(p.service||'?')}</td>
         <td class="risk-${p.risk||'low'}">${(p.risk||'').toUpperCase()}</td>
-        <td style="font-size:0.68rem;color:var(--muted);max-width:120px;overflow:hidden">${esc((p.banner||'').slice(0,60))}</td>
+        <td style="font-size:0.65rem;color:var(--muted);max-width:100px;overflow:hidden">${esc((p.banner||'').slice(0,50))}</td>
       </tr>`).join('')}
     </table>`;
-    container.innerHTML += buildSection('🔍', 'Ports ouverts', ports.length, html);
+    c.innerHTML+=buildSection('🔍','Ports ouverts',ports.length,pHTML);
   }
 
-  // TECHNOLOGIES
-  const techs = res.technologies || [];
+  // API Endpoints
+  const apiEps=res.api_endpoints||[];
+  if(apiEps.length) {
+    const apiHTML=apiEps.slice(0,30).map(ep=>`
+      <div class="list-item">
+        <div class="item-url">${esc(ep.path||'?')}</div>
+        <div class="item-status s${ep.status||0}">${ep.status}</div>
+        <div style="font-size:0.62rem;color:var(--muted)">${ep.size||0}B</div>
+      </div>`).join('');
+    c.innerHTML+=buildSection('🔗','API Endpoints',apiEps.length,apiHTML);
+  }
+
+  // Technologies
+  const techs=res.technologies||[];
   if(techs.length) {
-    let html = `<div style="display:flex;flex-wrap:wrap;gap:7px">
-      ${techs.map(t=>`<span class="tag tag-tech">🔧 ${esc(t.name)} <span style="opacity:0.6">(${t.category})</span></span>`).join('')}
+    const tHTML=`<div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${techs.map(t=>`<span class="tag tag-tech">🔧 ${esc(t.name)} <span style="opacity:0.5">(${t.category})</span></span>`).join('')}
     </div>`;
-    container.innerHTML += buildSection('🔧', 'Technologies détectées', techs.length, html);
+    c.innerHTML+=buildSection('🔧','Technologies',techs.length,tHTML);
   }
 
-  // DIRECTORIES
-  const dirs200 = (res.directories||[]).filter(d=>d.status===200);
-  const dirs403 = (res.directories||[]).filter(d=>[401,403].includes(d.status));
-  if(dirs200.length || dirs403.length) {
-    let html = dirs200.map(d=>`
+  // Directories
+  const d200=(res.directories||[]).filter(d=>d.status===200);
+  const d403=(res.directories||[]).filter(d=>[401,403].includes(d.status));
+  if(d200.length||d403.length) {
+    const dHTML=d200.map(d=>`
       <div class="list-item">
-        <div class="item-url">/${d.path}</div>
+        <div class="item-url">/${esc(d.path)}</div>
         <div class="item-status s200">200</div>
-        <div style="font-size:0.65rem;color:var(--muted)">${d.size||0}B</div>
-      </div>`).join('') +
-      dirs403.map(d=>`
+        <div style="font-size:0.62rem;color:var(--muted)">${d.size||0}B</div>
+      </div>`).join('')+
+    d403.map(d=>`
       <div class="list-item">
-        <div class="item-url">/${d.path}</div>
+        <div class="item-url">/${esc(d.path)}</div>
         <div class="item-status s${d.status}">${d.status}</div>
       </div>`).join('');
-    container.innerHTML += buildSection('📂', 'Répertoires trouvés', dirs200.length+dirs403.length, html);
+    c.innerHTML+=buildSection('📂','Répertoires',d200.length+d403.length,dHTML);
   }
 
   // DNS
-  const dns = res.dns || {};
-  const dnsEntries = Object.entries(dns).filter(([,v])=>v&&v.length);
-  if(dnsEntries.length) {
-    let html = dnsEntries.map(([type, records])=>{
-      const recs = Array.isArray(records) ? records : [records];
-      return recs.map(r=>`
+  const dns=res.dns||{};
+  const dnsEnt=Object.entries(dns).filter(([,v])=>v&&(Array.isArray(v)?v.length:true));
+  if(dnsEnt.length) {
+    const dHTML=dnsEnt.map(([type,recs])=>{
+      const arr=Array.isArray(recs)?recs:[recs];
+      return arr.slice(0,5).map(r=>`
         <div class="dns-row">
           <div class="dns-type">${type}</div>
           <div class="dns-val">${esc(typeof r==='object'?JSON.stringify(r):String(r))}</div>
         </div>`).join('');
     }).join('');
-    container.innerHTML += buildSection('🌐', 'Enregistrements DNS', dnsEntries.length, html);
+    c.innerHTML+=buildSection('🌐','DNS',dnsEnt.length,dHTML);
   }
 
   // WHOIS
-  const whois = res.whois || {};
-  const wEntries = Object.entries(whois).filter(([,v])=>v);
-  if(wEntries.length) {
-    let html = wEntries.map(([k,v])=>`
+  const whois=res.whois||{};
+  const wEnt=Object.entries(whois).filter(([,v])=>v);
+  if(wEnt.length) {
+    const wHTML=wEnt.map(([k,v])=>`
       <div class="list-item">
-        <div style="font-size:0.68rem;color:var(--muted);min-width:100px">${k.replace(/_/g,' ')}</div>
-        <div style="font-size:0.75rem;flex:1;word-break:break-all">${esc(String(v).slice(0,100))}</div>
+        <div style="font-size:0.65rem;color:var(--muted);min-width:90px">${k.replace(/_/g,' ')}</div>
+        <div style="font-size:0.72rem;flex:1;word-break:break-all">${esc(String(v).slice(0,100))}</div>
       </div>`).join('');
-    container.innerHTML += buildSection('📋', 'WHOIS', wEntries.length, html);
+    c.innerHTML+=buildSection('📋','WHOIS',wEnt.length,wHTML);
   }
 
   // Show download bar
   document.getElementById('download-bar').classList.add('visible');
-
-  // Switch to results tab
+  document.getElementById('btn-dl-html').classList.remove('hidden');
   showTab('results');
 
-  // Expand vulns by default
-  const firstBody = container.querySelector('.section-body');
-  if(firstBody) { firstBody.classList.add('open'); const ch=firstBody.previousElementSibling?.querySelector('.chevron'); if(ch)ch.classList.add('open'); }
+  // Auto-expand first important section
+  const first=c.querySelector('.section-body');
+  if(first){first.classList.add('open');const ch=first.previousElementSibling?.querySelector('.chevron');if(ch)ch.classList.add('open')}
 }
 
-function buildSection(icon, title, count, bodyHTML, defaultOpen=false) {
-  const id = 'sec_'+Math.random().toString(36).slice(2);
+function buildSection(icon,title,count,bodyHTML,defaultOpen=false){
+  const id='sec_'+Math.random().toString(36).slice(2);
   return `
     <div class="section-card fade-up">
       <div class="section-header" onclick="toggleSection('${id}')">
         <div class="section-htitle">${icon} ${title}</div>
-        <div style="display:flex;align-items:center;gap:8px">
+        <div style="display:flex;align-items:center;gap:7px">
           <span class="section-count">${count}</span>
           <span class="chevron ${defaultOpen?'open':''}">▼</span>
         </div>
@@ -856,27 +766,19 @@ function buildSection(icon, title, count, bodyHTML, defaultOpen=false) {
     </div>`;
 }
 
-function toggleSection(id) {
-  const body = document.getElementById(id);
-  const chevron = body.previousElementSibling.querySelector('.chevron');
-  body.classList.toggle('open');
-  chevron.classList.toggle('open');
+function toggleSection(id){
+  const b=document.getElementById(id);
+  const ch=b.previousElementSibling.querySelector('.chevron');
+  b.classList.toggle('open');ch.classList.toggle('open');
 }
 
-// ─── DOWNLOADS ───────────────────────────────────────────────
-function downloadTxt() {
-  if(!curScanId) return;
-  window.open('/api/download/txt/'+curScanId, '_blank');
-}
-function downloadDb() {
-  if(!curScanId) return;
-  window.open('/api/download/db/'+curScanId, '_blank');
-}
+// ─── DOWNLOADS ───────────────────────────────────────────────────
+function downloadTxt(){if(curScanId)window.open('/api/download/txt/'+curScanId,'_blank')}
+function downloadHtml(){if(curScanId)window.open('/api/download/html/'+curScanId,'_blank')}
+function downloadDb(){if(curScanId)window.open('/api/download/db/'+curScanId,'_blank')}
 
-// ─── KEYBOARD ────────────────────────────────────────────────
-document.getElementById('url-input').addEventListener('keydown', e=>{
-  if(e.key==='Enter') toggleScan();
-});
+// ─── KEYBOARD ────────────────────────────────────────────────────
+document.getElementById('url-input').addEventListener('keydown',e=>{if(e.key==='Enter')toggleScan()});
 </script>
 </body>
 </html>
