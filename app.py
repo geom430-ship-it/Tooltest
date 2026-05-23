@@ -45,6 +45,10 @@ from modules.login_bruteforce import scan_login_bruteforce
 from modules.graphql_auditor import scan_graphql
 from modules.idor_scanner import scan_idor
 from modules.takeover_checker import check_takeover
+# New modules v4.1
+from modules.param_miner import mine_params
+from modules.osint_recon import run_osint
+from modules.cloud_scanner import scan_cloud
 
 app = Flask(__name__)
 CORS(app)
@@ -631,16 +635,16 @@ def generate_dorks(target, category="all"):
 
 
 # ============================================================
-# FULL AUTO SCAN v3.0
+# FULL AUTO SCAN v4.1 — 25 modules
 # ============================================================
 
 # Store full scan results for download
 full_scan_store = {}
 
-TOTAL_STEPS = 18
+TOTAL_STEPS = 21
 
 def full_auto_scan(url, scan_id, callback):
-    """Run all modules automatically on a target URL — v4.0 with 18 steps, 22 modules"""
+    """Run all modules automatically on a target URL — v4.1 — 21 steps, 25 modules"""
     import socket, urllib.parse
 
     results = {
@@ -670,6 +674,9 @@ def full_auto_scan(url, scan_id, callback):
         "graphql_findings": [],
         "idor_findings": [],
         "takeover_findings": [],
+        "param_findings": [],
+        "osint": {},
+        "cloud_findings": [],
         "summary": {}
     }
 
@@ -685,7 +692,7 @@ def full_auto_scan(url, scan_id, callback):
         results["ip"] = "N/A"
 
     callback({"type": "info", "message": f"🎯 Cible : {domain} ({results['ip']})"})
-    callback({"type": "info", "message": f"🚀 UHQKYRA v4.0 — Scan complet ({TOTAL_STEPS} étapes, 22 modules)..."})
+    callback({"type": "info", "message": f"🚀 UHQKYRA v4.1 — Scan complet ({TOTAL_STEPS} étapes, 22 modules)..."})
     callback({"type": "progress", "step": 0, "total": TOTAL_STEPS, "label": "Démarrage..."})
 
     # ── STEP 1 : WHOIS + GeoIP ──────────────────────────────
@@ -1146,9 +1153,43 @@ def full_auto_scan(url, scan_id, callback):
     except Exception:
         pass
 
-    # ── STEP 18 : SUMMARY ───────────────────────────────────
+    # ── STEP 16 : PARAM MINER ───────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔎 PARAM MINER (PARAMS CACHÉS) ━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 16, "total": TOTAL_STEPS, "label": "Param mining..."})
+    try:
+        pm_data = mine_params(url, callback=callback)
+        results["param_findings"] = pm_data.get("interesting", [])
+        for v in pm_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"Param miner: {e}"})
+
+    # ── STEP 17 : OSINT ─────────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🕵️ OSINT RECON ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 17, "total": TOTAL_STEPS, "label": "OSINT..."})
+    try:
+        osint_data = run_osint(url, callback=callback)
+        results["osint"] = osint_data
+        results["emails_found"] = list(set(
+            results["emails_found"] + osint_data.get("emails", [])
+        ))
+    except Exception as e:
+        callback({"type": "warn", "message": f"OSINT: {e}"})
+
+    # ── STEP 18 : CLOUD SCANNER ─────────────────────────────
+    callback({"type": "section", "message": "\n━━━ ☁️ CLOUD STORAGE SCAN ━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 18, "total": TOTAL_STEPS, "label": "Cloud scan..."})
+    try:
+        cloud_data = scan_cloud(domain, callback=callback)
+        results["cloud_findings"] = cloud_data.get("findings", [])
+        for v in cloud_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"Cloud scan: {e}"})
+
+    # ── STEP 21 : SUMMARY ───────────────────────────────────
     callback({"type": "section", "message": "\n━━━ 📊 RAPPORT FINAL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 18, "total": TOTAL_STEPS, "label": "Finalisation..."})
+    callback({"type": "progress", "step": 21, "total": TOTAL_STEPS, "label": "Finalisation..."})
 
     # Deduplicate vulnerabilities
     seen = set()
@@ -1195,6 +1236,11 @@ def full_auto_scan(url, scan_id, callback):
         "graphql_endpoints": len(results["graphql_findings"]),
         "idor_findings": len(results["idor_findings"]),
         "takeover_findings": len(results["takeover_findings"]),
+        # New v4.1
+        "param_findings": len(results["param_findings"]),
+        "cloud_findings": len(results["cloud_findings"]),
+        "osint_emails": len(results["osint"].get("emails", [])),
+        "osint_dorks": len(results["osint"].get("dorks", [])),
     }
 
     full_scan_store[scan_id] = results
@@ -1238,7 +1284,7 @@ def download_txt(scan_id):
 
     lines = []
     lines.append("=" * 65)
-    lines.append(f"  UHQKYRA v4.0 — RAPPORT D'AUDIT DE SÉCURITÉ (22 modules)")
+    lines.append(f"  UHQKYRA v4.1 — RAPPORT D'AUDIT DE SÉCURITÉ (22 modules)")
     lines.append("=" * 65)
     lines.append(f"Cible     : {res['url']}")
     lines.append(f"Domaine   : {res['domain']}")
@@ -1511,7 +1557,7 @@ def download_txt(scan_id):
 
     lines.append("=" * 65)
     lines.append("  ⚠️  RAPPORT CONFIDENTIEL — USAGE AUTORISÉ UNIQUEMENT")
-    lines.append(f"  Généré par UHQKYRA v4.0 (22 modules) — {res['scan_time']}")
+    lines.append(f"  Généré par UHQKYRA v4.1 (25 modules) — {res['scan_time']}")
     lines.append("=" * 65)
 
     content = "\n".join(lines)
