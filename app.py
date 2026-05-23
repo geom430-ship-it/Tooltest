@@ -575,14 +575,20 @@ def generate_dorks(target, category="all"):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='PentestKit v1.0')
+    parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5000)), help='Port (default: 5000)')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host (default: 0.0.0.0)')
+    args = parser.parse_args()
+
     os.makedirs('reports', exist_ok=True)
-    print("""
+    print(f"""
 ╔═══════════════════════════════════════════════╗
 ║       PentestKit v1.0 - Web Security Tool      ║
 ║  ⚠️  For authorized security testing only!     ║
 ╠═══════════════════════════════════════════════╣
-║  🌐 Interface: http://127.0.0.1:5000           ║
-║  📡 API: http://127.0.0.1:5000/api/            ║
+║  🌐 Interface: http://127.0.0.1:{args.port:<14}║
+║  📡 API: http://127.0.0.1:{args.port}/api/          ║
 ╚═══════════════════════════════════════════════╝
     """)
-    app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
+    app.run(debug=False, host=args.host, port=args.port, threaded=True)
