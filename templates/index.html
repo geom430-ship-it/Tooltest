@@ -416,8 +416,25 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 </div><!-- .page -->
 
 <script>
+// ─── BASE URL (fix Android/Termux fetch to 127.0.0.1) ────────────
+const BASE = window.location.origin;  // e.g. http://127.0.0.1:5000
+
 // ─── STATE ───────────────────────────────────────────────────────
 let scanning = false, curScanId = null, curSrc = null, scanResults = null;
+
+// ─── AUTO HEALTH CHECK ───────────────────────────────────────────
+window.addEventListener('load', () => {
+  fetch(BASE + '/api/health', {method:'GET'})
+    .then(r => r.json())
+    .then(d => console.log('✅ Backend OK:', d))
+    .catch(e => {
+      console.error('❌ Backend unreachable:', e);
+      const term = document.getElementById('terminal');
+      if(term) term.innerHTML = '<div class="line error">❌ Connexion au serveur impossible — vérifie que Python est bien lancé sur le bon port</div>';
+      const es = document.getElementById('empty-state');
+      if(es) es.innerHTML = `<div class="icon">❌</div><p style="color:#ff4444">Serveur inaccessible<br><small>Lance : <code>python app.py</code><br>puis recharge cette page</small></p>`;
+    });
+});
 const TOTAL = 21;
 const STEP_IDS = ['ps-1','ps-2','ps-3','ps-4','ps-5','ps-6','ps-7','ps-8','ps-9','ps-10','ps-11','ps-12','ps-13','ps-14','ps-15','ps-16','ps-17','ps-18','ps-19','ps-20','ps-21'];
 
@@ -481,19 +498,19 @@ function startScan() {
   document.getElementById('progress-section').classList.add('visible');
   setProgress(0,TOTAL,'Connexion...');
 
-  fetch('/api/fullscan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})})
+  fetch(BASE+'/api/fullscan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})})
   .then(r=>r.json())
   .then(data=>{
     if(data.error){log('❌ '+data.error,'error');stopScan();return}
     curScanId=data.scan_id;
-    const src=new EventSource('/api/stream/'+data.scan_id);
+    const src=new EventSource(BASE+'/api/stream/'+data.scan_id);
     curSrc=src;
     src.onmessage=e=>{
       const evt=JSON.parse(e.data);
       if(evt.type==='progress'){if(evt.step!==undefined)setProgress(evt.step,evt.total||TOTAL,evt.label||'');return}
       if(evt.type==='section'){log(evt.message,'section');return}
       if(evt.type==='done_full'){
-        fetch('/api/fullscan/results/'+curScanId).then(r=>r.json()).then(res=>{
+        fetch(BASE+'/api/fullscan/results/'+curScanId).then(r=>r.json()).then(res=>{
           scanResults=res; renderResults(res); stopScan(true);
         });return}
       if(evt.type==='done'||evt.type==='keepalive')return;
@@ -501,7 +518,12 @@ function startScan() {
     };
     src.onerror=()=>{src.close();if(scanning){log('⚠️ Stream interrompu','warn');stopScan()}};
   })
-  .catch(e=>{log('❌ '+e,'error');stopScan()});
+  .catch(e=>{
+    log('❌ Erreur réseau: ' + e, 'error');
+    log('💡 Vérifie que python app.py tourne bien sur le port 5000', 'warn');
+    log('💡 Essaie de recharger la page après avoir lancé le serveur', 'warn');
+    stopScan();
+  });
 }
 
 function stopScan(completed=false) {
@@ -933,9 +955,9 @@ function toggleSection(id){
 }
 
 // ─── DOWNLOADS ───────────────────────────────────────────────────
-function downloadTxt(){if(curScanId)window.open('/api/download/txt/'+curScanId,'_blank')}
-function downloadHtml(){if(curScanId)window.open('/api/download/html/'+curScanId,'_blank')}
-function downloadDb(){if(curScanId)window.open('/api/download/db/'+curScanId,'_blank')}
+function downloadTxt(){if(curScanId)window.open(BASE+'/api/download/txt/'+curScanId,'_blank')}
+function downloadHtml(){if(curScanId)window.open(BASE+'/api/download/html/'+curScanId,'_blank')}
+function downloadDb(){if(curScanId)window.open(BASE+'/api/download/db/'+curScanId,'_blank')}
 
 // ─── KEYBOARD ────────────────────────────────────────────────────
 document.getElementById('url-input').addEventListener('keydown',e=>{if(e.key==='Enter')toggleScan()});

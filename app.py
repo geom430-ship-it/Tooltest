@@ -59,7 +59,11 @@ from modules.ssrf_scanner import scan_ssrf
 from modules.ssti_scanner import scan_ssti
 
 app = Flask(__name__)
-CORS(app)
+# Full CORS — required for Android browser / Termux
+CORS(app, resources={r"/*": {"origins": "*"}},
+     supports_credentials=False,
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "OPTIONS", "DELETE", "PUT"])
 
 # Store active scan queues
 scan_queues = {}
@@ -116,6 +120,26 @@ def stream_scan(scan_id):
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+@app.route('/api/health', methods=['GET', 'OPTIONS'])
+def api_health():
+    """Health check endpoint — used by frontend to verify backend is reachable"""
+    return jsonify({
+        "status": "ok",
+        "version": "5.0",
+        "modules": 32,
+        "steps": 27
+    })
+
+
+@app.after_request
+def add_cors_headers(response):
+    """Ensure CORS headers on every response — fixes Android browser issues"""
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS, PUT, DELETE'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
 
 
 # --- Port Scanner ---
