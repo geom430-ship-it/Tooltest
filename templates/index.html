@@ -324,6 +324,19 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 /* TAG */
 .tag{display:inline-block;padding:2px 7px;border-radius:4px;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
 .tag-tech{background:rgba(124,58,237,0.15);color:#a78bfa;border:1px solid rgba(124,58,237,0.3)}
+
+/* VULN ITEM — colored left border by severity */
+.vuln-critical{border-left:3px solid var(--red);padding-left:8px}
+.vuln-high{border-left:3px solid var(--orange);padding-left:8px}
+.vuln-medium{border-left:3px solid var(--yellow);padding-left:8px}
+.vuln-low{border-left:3px solid var(--green);padding-left:8px}
+
+/* SECTION CARD — critical sections get subtle red tint */
+.section-card-critical{border-color:rgba(255,71,87,0.35);background:rgba(255,71,87,0.03)}
+.section-card-warn{border-color:rgba(255,159,67,0.3);background:rgba(255,159,67,0.02)}
+
+/* GRADE FALLBACK */
+.grade-\?{background:rgba(100,116,139,0.2);color:var(--muted);border:2px solid var(--muted)}
 </style>
 </head>
 <body>
@@ -370,9 +383,15 @@ html,body{height:100%;background:var(--bg);color:var(--text);
       <div class="pstep" id="ps-16">PARAMS</div>
       <div class="pstep" id="ps-17">OSINT</div>
       <div class="pstep" id="ps-18">CLOUD</div>
-      <div class="pstep" id="ps-19">DONE</div>
-      <div class="pstep" id="ps-20">DONE</div>
-      <div class="pstep" id="ps-21">DONE</div>
+      <div class="pstep" id="ps-19">SECRET</div>
+      <div class="pstep" id="ps-20">CORS</div>
+      <div class="pstep" id="ps-21">SMUGGL</div>
+      <div class="pstep" id="ps-22">API</div>
+      <div class="pstep" id="ps-23">SSRF</div>
+      <div class="pstep" id="ps-24">SSTI</div>
+      <div class="pstep" id="ps-25">EMAIL</div>
+      <div class="pstep" id="ps-26">REPORT</div>
+      <div class="pstep" id="ps-27">DONE</div>
     </div>
     <div class="progress-bar-bg">
       <div id="progress-fill" class="progress-bar-fill"></div>
@@ -507,16 +526,39 @@ function startScan() {
 
     function fetchAndRender(){
       fetch(BASE+'/api/fullscan/results/'+curScanId)
-        .then(r=>r.json())
+        .then(r=>{
+          if(!r.ok) throw new Error('HTTP '+r.status);
+          return r.json();
+        })
         .then(res=>{
-          if(res&&res.summary&&Object.keys(res.summary).length>0){
-            scanResults=res; renderResults(res); stopScan(true);
-          } else {
-            log('⚠️ Résultats incomplets — scan peut être en cours','warn');
-            stopScan();
+          if(!res||res.error){
+            log('❌ Serveur: '+(res&&res.error||'Résultats introuvables'),'error');
+            stopScan(); return;
+          }
+          scanResults=res;
+          stopScan(true);
+          // Render in try/catch — show what we have even on partial error
+          try {
+            renderResults(res);
+          } catch(renderErr) {
+            console.error('renderResults error:', renderErr);
+            log('⚠️ Erreur rendu partiel: '+renderErr.message,'warn');
+            // Fallback: show raw summary
+            renderFallback(res);
           }
         })
-        .catch(()=>{log('❌ Impossible de récupérer les résultats','error');stopScan()});
+        .catch(e=>{
+          log('❌ Récupération résultats: '+e.message,'error');
+          log('💡 Le scan a peut-être bien terminé — réessaie dans 3s...','warn');
+          // Retry once after 3 seconds
+          setTimeout(()=>{
+            fetch(BASE+'/api/fullscan/results/'+curScanId)
+              .then(r=>r.json()).then(res=>{
+                if(res&&!res.error){scanResults=res;try{renderResults(res);}catch(e){renderFallback(res);}}
+              }).catch(()=>{});
+          }, 3000);
+          stopScan();
+        });
     }
 
     const src=new EventSource(BASE+'/api/stream/'+data.scan_id);
@@ -569,61 +611,106 @@ function stopScan(completed=false) {
   else setProgress(TOTAL,TOTAL,'✅ Scan terminé !');
 }
 
-// ─── RENDER RESULTS ──────────────────────────────────────────────
+// ─── RENDER FALLBACK (affiché si renderResults lance une exception) ──
+function renderFallback(res) {
+  const c = document.getElementById('results-content');
+  c.style.display = 'block';
+  document.getElementById('empty-state').style.display = 'none';
+  const s = res.summary || {};
+  const vulns = (res.vulnerabilities||[]).filter(v=>v.severity!=='info');
+  const risk = (s.overall_risk||'faible').toLowerCase();
+  let html = `
+    <div class="risk-banner risk-${risk} fade-up">
+      <div>
+        <div class="risk-title">⚠️ Affichage de secours</div>
+        <div class="risk-value">${s.overall_risk||'?'}</div>
+        <div style="font-size:0.67rem;color:var(--muted);margin-top:3px">
+          ${vulns.length} vulnérabilité(s) · Score: ${s.risk_score||0}
+        </div>
+      </div>
+      <div style="font-size:2.2rem">⚠️</div>
+    </div>`;
+  if(vulns.length){
+    const sev={critical:0,high:1,medium:2,low:3};
+    html+=buildSection('💥','Vulnérabilités',vulns.length,
+      [...vulns].sort((a,b)=>(sev[a.severity]||4)-(sev[b.severity]||4)).map(v=>`
+        <div class="vuln-item vuln-${v.severity||'low'}">
+          <div class="vsev vsev-${v.severity||'low'}">${v.severity||'?'}</div>
+          <div><div class="vuln-name">${esc(v.name||'')}</div>
+          ${v.detail?`<div class="vuln-detail">${esc(String(v.detail).slice(0,150))}</div>`:''}</div>
+        </div>`).join(''),true);
+  }
+  html+=`<div class="section-card fade-up">
+    <div class="section-header" onclick="toggleSection('fb_raw')">
+      <div class="section-htitle">📋 Données brutes (résumé)</div><span class="chevron">▼</span>
+    </div>
+    <div class="section-body" id="fb_raw">
+      <pre style="font-size:0.58rem;color:var(--muted);white-space:pre-wrap;word-break:break-all;max-height:300px;overflow-y:auto">${esc(JSON.stringify(s,null,2))}</pre>
+    </div>
+  </div>`;
+  c.innerHTML = html;
+  document.getElementById('download-bar').classList.add('visible');
+  showTab('results');
+}
+
+// ─── RENDER RESULTS (sections isolées — une erreur n'arrête pas les autres) ──
 function renderResults(res) {
   const c=document.getElementById('results-content');
   const s=res.summary||{};
   c.innerHTML=''; c.style.display='block';
   document.getElementById('empty-state').style.display='none';
 
-  // Risk banner
-  const risk=(s.overall_risk||'FAIBLE').toLowerCase();
+  // ── Risk Banner ──────────────────────────────────────────────
+  try {
+    const risk=(s.overall_risk||'FAIBLE').toLowerCase();
+    const riskIcon=risk==='critique'?'🚨':risk==='élevé'?'⚠️':risk==='moyen'?'⚡':'✅';
   c.innerHTML+=`
     <div class="risk-banner risk-${risk} fade-up">
       <div>
         <div class="risk-title">Niveau de risque global</div>
         <div class="risk-value">${s.overall_risk||'?'}</div>
         <div style="font-size:0.67rem;color:var(--muted);margin-top:3px">
-          Score: ${s.risk_score||0} · ${res.domain} (${res.ip})
+          Score: ${s.risk_score||0} · ${esc(res.domain||'')} ${res.ip?'('+esc(res.ip)+')':''}
         </div>
       </div>
-      <div style="font-size:2.2rem">
-        ${risk==='critique'?'🚨':risk==='élevé'?'⚠️':risk==='moyen'?'⚡':'✅'}
-      </div>
+      <div style="font-size:2.5rem">${riskIcon}</div>
     </div>`;
+  } catch(e){console.warn('[render] risk banner:',e)}
 
-  // Meta chips: WAF, CMS, Email grade, JS secrets, new v4.0
-  let chips='<div class="meta-chips fade-up">';
-  const waf=res.waf||{};
-  if(waf.detected)
-    chips+=`<div class="meta-chip mc-detected">🛡️ WAF: ${esc(waf.waf_name||'?')}</div>`;
-  else
-    chips+=`<div class="meta-chip mc-safe">🛡️ Pas de WAF</div>`;
-  const cms=res.cms||{};
-  if(cms.cms) chips+=`<div class="meta-chip mc-warn">🎯 CMS: ${esc(cms.cms)}${cms.version?' v'+esc(cms.version):''}</div>`;
-  const eg=s.email_grade||'?';
-  chips+=`<div class="meta-chip ${eg==='A'||eg==='B'?'mc-safe':eg==='F'||eg==='D'?'mc-detected':'mc-warn'}">📧 Email: ${eg}</div>`;
-  if(s.js_secrets>0) chips+=`<div class="meta-chip mc-detected">🔑 ${s.js_secrets} JS secrets</div>`;
-  if(s.api_endpoints>0) chips+=`<div class="meta-chip">🔗 ${s.api_endpoints} API</div>`;
-  if(s.subdomains>0) chips+=`<div class="meta-chip">🌐 ${s.subdomains} sous-domaines</div>`;
-  if(s.takeover_findings>0) chips+=`<div class="meta-chip mc-detected">🎯 ${s.takeover_findings} takeover!</div>`;
-  if(s.jwt_tokens>0) chips+=`<div class="meta-chip mc-warn">🔑 ${s.jwt_tokens} JWT</div>`;
-  if(s.login_successes>0) chips+=`<div class="meta-chip mc-detected">🚨 ${s.login_successes} login compromis!</div>`;
-  if(s.graphql_endpoints>0) chips+=`<div class="meta-chip mc-warn">🕸️ ${s.graphql_endpoints} GraphQL</div>`;
-  if(s.idor_findings>0) chips+=`<div class="meta-chip mc-detected">🔓 ${s.idor_findings} IDOR!</div>`;
-  if(s.param_findings>0) chips+=`<div class="meta-chip mc-warn">🔎 ${s.param_findings} params cachés</div>`;
-  if(s.cloud_findings>0) chips+=`<div class="meta-chip mc-detected">☁️ ${s.cloud_findings} cloud!</div>`;
-  if(s.osint_emails>0) chips+=`<div class="meta-chip">📧 ${s.osint_emails} emails OSINT</div>`;
-  if(s.secret_findings>0) chips+=`<div class="meta-chip mc-detected">🔐 ${s.secret_findings} secrets!</div>`;
-  if(s.cors_findings>0) chips+=`<div class="meta-chip mc-warn">🌍 ${s.cors_findings} CORS</div>`;
-  if(s.smuggling_findings>0) chips+=`<div class="meta-chip mc-detected">🚇 ${s.smuggling_findings} Smuggling!</div>`;
-  if(s.api_findings>0) chips+=`<div class="meta-chip mc-warn">🔗 ${s.api_findings} API vulns</div>`;
-  if(s.ssrf_findings>0) chips+=`<div class="meta-chip mc-detected">🌐 ${s.ssrf_findings} SSRF!</div>`;
-  if(s.ssti_findings>0) chips+=`<div class="meta-chip mc-detected">🧩 ${s.ssti_findings} SSTI!</div>`;
-  chips+='</div>';
-  c.innerHTML+=chips;
+  // ── Meta Chips ───────────────────────────────────────────────
+  try {
+    const waf=res.waf||{};
+    const cms=res.cms||{};
+    const eg=s.email_grade||'?';
+    let chips='<div class="meta-chips fade-up">';
+    chips+=waf.detected
+      ?`<div class="meta-chip mc-detected">🛡️ WAF: ${esc(waf.waf_name||'?')}</div>`
+      :`<div class="meta-chip mc-safe">🛡️ No WAF</div>`;
+    if(cms.cms) chips+=`<div class="meta-chip mc-warn">🎯 ${esc(cms.cms)}${cms.version?' v'+esc(cms.version):''}</div>`;
+    chips+=`<div class="meta-chip ${eg==='A'||eg==='B'?'mc-safe':eg==='F'||eg==='D'?'mc-detected':'mc-warn'}">📧 Email: ${eg}</div>`;
+    if((s.js_secrets||0)>0) chips+=`<div class="meta-chip mc-detected">🔑 ${s.js_secrets} secrets JS</div>`;
+    if((s.api_endpoints||0)>0) chips+=`<div class="meta-chip">🔗 ${s.api_endpoints} API</div>`;
+    if((s.subdomains||0)>0) chips+=`<div class="meta-chip">🌐 ${s.subdomains} sous-domaines</div>`;
+    if((s.takeover_findings||0)>0) chips+=`<div class="meta-chip mc-detected">🎯 ${s.takeover_findings} Takeover!</div>`;
+    if((s.jwt_tokens||0)>0) chips+=`<div class="meta-chip mc-warn">🔑 ${s.jwt_tokens} JWT</div>`;
+    if((s.login_successes||0)>0) chips+=`<div class="meta-chip mc-detected">🚨 ${s.login_successes} login!</div>`;
+    if((s.graphql_endpoints||0)>0) chips+=`<div class="meta-chip mc-warn">🕸️ ${s.graphql_endpoints} GraphQL</div>`;
+    if((s.idor_findings||0)>0) chips+=`<div class="meta-chip mc-detected">🔓 ${s.idor_findings} IDOR!</div>`;
+    if((s.param_findings||0)>0) chips+=`<div class="meta-chip mc-warn">🔎 ${s.param_findings} params</div>`;
+    if((s.cloud_findings||0)>0) chips+=`<div class="meta-chip mc-detected">☁️ ${s.cloud_findings} cloud!</div>`;
+    if((s.osint_emails||0)>0) chips+=`<div class="meta-chip">📧 ${s.osint_emails} emails</div>`;
+    if((s.secret_findings||0)>0) chips+=`<div class="meta-chip mc-detected">🔐 ${s.secret_findings} secrets!</div>`;
+    if((s.cors_findings||0)>0) chips+=`<div class="meta-chip mc-warn">🌍 ${s.cors_findings} CORS</div>`;
+    if((s.smuggling_findings||0)>0) chips+=`<div class="meta-chip mc-detected">🚇 ${s.smuggling_findings} Smuggling!</div>`;
+    if((s.api_findings||0)>0) chips+=`<div class="meta-chip mc-warn">🔗 ${s.api_findings} API vulns</div>`;
+    if((s.ssrf_findings||0)>0) chips+=`<div class="meta-chip mc-detected">🌐 ${s.ssrf_findings} SSRF!</div>`;
+    if((s.ssti_findings||0)>0) chips+=`<div class="meta-chip mc-detected">🧩 ${s.ssti_findings} SSTI!</div>`;
+    chips+='</div>';
+    c.innerHTML+=chips;
+  } catch(e){console.warn('[render] chips:',e)}
 
-  // Stats row
+  // ── Stats Row ────────────────────────────────────────────────
+  try {
   c.innerHTML+=`
     <div class="stats-row fade-up">
       <div class="stat-card"><span class="stat-num sn-red">${s.vulns_critical||0}</span><div class="stat-lbl">Critical</div></div>
@@ -631,422 +718,484 @@ function renderResults(res) {
       <div class="stat-card"><span class="stat-num sn-accent">${s.open_ports||0}</span><div class="stat-lbl">Ports</div></div>
       <div class="stat-card"><span class="stat-num sn-green">${s.dirs_found||0}</span><div class="stat-lbl">Dirs</div></div>
     </div>`;
+  } catch(e){console.warn('[render] stats:',e)}
 
-  // DB card
-  if(res.database&&res.database.version) {
-    const db=res.database;
-    const tables=db.tables||[];
-    const sensitiveWords=['user','admin','password','account','credential','secret','token','auth','passwd'];
-    c.innerHTML+=`
-      <div class="db-card fade-up">
-        <div class="db-title">🚨 BASE DE DONNÉES EXTRAITE</div>
-        <div class="db-info">
-          <div class="db-field"><div class="db-field-label">Type</div><div class="db-field-value">${esc(db.db_type||'?')}</div></div>
-          <div class="db-field"><div class="db-field-label">Version</div><div class="db-field-value">${esc((db.version||'?').slice(0,25))}</div></div>
-          <div class="db-field"><div class="db-field-label">Utilisateur</div><div class="db-field-value">${esc(db.current_user||'?')}</div></div>
-          <div class="db-field"><div class="db-field-label">Base active</div><div class="db-field-value">${esc(db.current_db||'?')}</div></div>
-        </div>
-        ${tables.length?`<div style="font-size:0.67rem;color:var(--muted);margin-bottom:7px">Tables (${tables.length}):</div>
-          <div class="db-tables">${tables.map(t=>{
-            const sens=sensitiveWords.some(w=>t.toLowerCase().includes(w));
-            return `<div class="db-table-tag ${sens?'sensitive':''}">${esc(t)}${sens?' 🔑':''}</div>`;
-          }).join('')}</div>`:''
-        }
-      </div>`;
-    document.getElementById('btn-dl-db').classList.remove('hidden');
-  }
-
-  // Vulnerabilities
-  const vulns=res.vulnerabilities||[];
-  const importantVulns=vulns.filter(v=>v.severity!=='info');
-  if(importantVulns.length) {
-    const sev_ord={critical:0,high:1,medium:2,low:3};
-    const sorted=[...importantVulns].sort((a,b)=>(sev_ord[a.severity]||4)-(sev_ord[b.severity]||4));
-    const vulnHTML=sorted.map(v=>`
-      <div class="vuln-item">
-        <div class="vsev vsev-${v.severity||'low'}">${v.severity||'?'}</div>
-        <div>
-          <div class="vuln-name">${esc(v.name||'')}</div>
-          ${v.detail?`<div class="vuln-detail">${esc(String(v.detail).slice(0,120))}</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('💥',`Vulnérabilités`,importantVulns.length,vulnHTML,true);
-    const badge=document.getElementById('badge-vulns');
-    badge.textContent=importantVulns.length;
-    badge.style.display='inline-block';
-  }
-
-  // JS Secrets
-  const js=res.js||{};
-  if(js.secrets&&js.secrets.length) {
-    const jsHTML=js.secrets.map(s=>`
-      <div class="secret-item">
-        <div class="secret-type">${esc(s.type||'?')}</div>
-        <div class="secret-val">${esc((s.value||'').slice(0,200))}</div>
-        <div style="font-size:0.6rem;color:var(--muted);margin-top:3px">Source: ${esc((s.source||'').split('/').pop())}</div>
-      </div>`).join('')+
-    (js.endpoints&&js.endpoints.length?`<div style="margin-top:10px;font-size:0.7rem;color:var(--muted);margin-bottom:5px">Endpoints API dans les JS:</div>`+
-      js.endpoints.slice(0,15).map(ep=>`<div class="list-item"><div class="item-url">${esc(ep)}</div></div>`).join(''):'');
-    c.innerHTML+=buildSection('🔑','Secrets & Endpoints JS',js.secrets.length,jsHTML,true);
-  } else if(js.endpoints&&js.endpoints.length) {
-    const epHTML=js.endpoints.slice(0,20).map(ep=>
-      `<div class="list-item"><div class="item-url">${esc(ep)}</div></div>`
-    ).join('');
-    c.innerHTML+=buildSection('🔗',`Endpoints API (JS)`,js.endpoints.length,epHTML);
-  }
-
-  // CMS section
-  if(cms.cms) {
-    let cmsHTML=`<div class="cms-card">
-      <div class="cms-title">🎯 ${esc(cms.cms)}${cms.version?' <small>v'+esc(cms.version)+'</small>':''}</div>`;
-    if(cms.login_pages&&cms.login_pages.length) {
-      cmsHTML+=`<div style="font-size:0.7rem;color:var(--muted);margin-bottom:5px">Pages login:</div>`;
-      cms.login_pages.slice(0,5).forEach(lp=>{
-        cmsHTML+=`<div class="list-item"><div class="item-url">${esc(lp)}</div></div>`;
-      });
+  // ── DB Card ──────────────────────────────────────────────────
+  try {
+    const db=res.database||{};
+    if(db.version) {
+      const tables=db.tables||[];
+      const sensitiveWords=['user','admin','password','account','credential','secret','token','auth','passwd','pass','cred'];
+      let credsHTML='';
+      if(db.credentials&&db.credentials.length){
+        credsHTML=`<div style="margin-top:10px">
+          <div style="font-size:0.67rem;color:var(--red);font-weight:700;margin-bottom:5px">🚨 Credentials extraits (${db.credentials.length}):</div>
+          ${db.credentials.slice(0,10).map(cr=>`
+            <div style="background:rgba(255,71,87,0.1);border-left:3px solid var(--red);padding:5px 8px;margin:3px 0;border-radius:4px;font-size:0.68rem;font-family:monospace">
+              <span style="color:var(--accent)">${esc(cr.username||cr.user||'?')}</span>
+              <span style="color:var(--muted)"> : </span>
+              <span style="color:var(--red)">${esc(cr.password||cr.hash||'?')}</span>
+              ${cr.hash_type?`<span style="color:var(--muted);margin-left:6px">[${esc(cr.hash_type)}]</span>`:''}
+            </div>`).join('')}
+        </div>`;
+      }
+      c.innerHTML+=`
+        <div class="db-card fade-up">
+          <div class="db-title">🚨 BASE DE DONNÉES EXTRAITE</div>
+          <div class="db-info">
+            <div class="db-field"><div class="db-field-label">Type</div><div class="db-field-value">${esc(db.db_type||'?')}</div></div>
+            <div class="db-field"><div class="db-field-label">Version</div><div class="db-field-value">${esc((db.version||'?').slice(0,25))}</div></div>
+            <div class="db-field"><div class="db-field-label">Utilisateur</div><div class="db-field-value">${esc(db.current_user||'?')}</div></div>
+            <div class="db-field"><div class="db-field-label">Base active</div><div class="db-field-value">${esc(db.current_db||'?')}</div></div>
+          </div>
+          ${tables.length?`<div style="font-size:0.67rem;color:var(--muted);margin-bottom:7px">Tables (${tables.length}):</div>
+            <div class="db-tables">${tables.map(t=>{
+              const sens=sensitiveWords.some(w=>t.toLowerCase().includes(w));
+              return `<div class="db-table-tag ${sens?'sensitive':''}">${esc(t)}${sens?' 🔑':''}</div>`;
+            }).join('')}</div>`:''}
+          ${credsHTML}
+        </div>`;
+      document.getElementById('btn-dl-db').classList.remove('hidden');
     }
-    if(cms.plugins&&cms.plugins.length) {
-      cmsHTML+=`<div style="font-size:0.7rem;color:var(--muted);margin:8px 0 5px">Plugins (${cms.plugins.length}):</div>`;
-      cmsHTML+=cms.plugins.map(p=>`<span class="plugin-tag">${esc(p.name)} v${esc(p.version)}</span>`).join('');
-    }
-    cmsHTML+='</div>';
-    c.innerHTML+=buildSection('🎯',`CMS: ${cms.cms}`,1,cmsHTML);
-  }
+  } catch(e){console.warn('[render] database:',e)}
 
-  // Email security section
-  const emailSec=res.email_security||{};
-  if(emailSec.spf||emailSec.dmarc||emailSec.dkim) {
-    const grade=emailSec.grade||'?';
-    const spfOk=emailSec.spf&&emailSec.spf.found;
-    const dmarcOk=emailSec.dmarc&&emailSec.dmarc.found;
-    const dkimOk=emailSec.dkim&&emailSec.dkim.found;
-    const emailHTML=`
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
-        <div class="email-grade grade-${grade}">${grade}</div>
-        <div>
-          <div style="font-weight:700;font-size:0.82rem">Sécurité Email</div>
-          <div style="font-size:0.68rem;color:var(--muted)">${emailSec.score||0}/10 points</div>
-        </div>
-      </div>
-      <div class="email-checks">
-        <div class="email-check ${spfOk?'check-ok':'check-fail'}">${spfOk?'✅':'❌'} SPF ${spfOk?emailSec.spf.policy||'ok':'absent'}</div>
-        <div class="email-check ${dmarcOk?'check-ok':'check-fail'}">${dmarcOk?'✅':'❌'} DMARC ${dmarcOk?'p='+emailSec.dmarc.policy:'absent'}</div>
-        <div class="email-check ${dkimOk?'check-ok':'check-fail'}">${dkimOk?'✅':'❌'} DKIM ${dkimOk?emailSec.dkim.selectors.slice(0,2).join(', '):'absent'}</div>
-        <div class="email-check ${emailSec.mx&&emailSec.mx.found?'check-ok':'check-fail'}">${emailSec.mx&&emailSec.mx.found?'✅':'❌'} MX ${emailSec.mx&&emailSec.mx.records?emailSec.mx.records.length+' serveur(s)':'absent'}</div>
-      </div>`;
-    c.innerHTML+=buildSection('📧','Sécurité Email',1,emailHTML);
-  }
-
-  // Open ports
-  const ports=(res.ports||[]).filter(p=>p.state==='open');
-  if(ports.length) {
-    const pHTML=`<table class="ports-table">
-      <tr><th>Port</th><th>Service</th><th>Risque</th><th>Banner</th></tr>
-      ${ports.map(p=>`<tr>
-        <td class="port-num">${p.port}</td>
-        <td>${esc(p.service||'?')}</td>
-        <td class="risk-${p.risk||'low'}">${(p.risk||'').toUpperCase()}</td>
-        <td style="font-size:0.65rem;color:var(--muted);max-width:100px;overflow:hidden">${esc((p.banner||'').slice(0,50))}</td>
-      </tr>`).join('')}
-    </table>`;
-    c.innerHTML+=buildSection('🔍','Ports ouverts',ports.length,pHTML);
-  }
-
-  // API Endpoints
-  const apiEps=res.api_endpoints||[];
-  if(apiEps.length) {
-    const apiHTML=apiEps.slice(0,30).map(ep=>`
-      <div class="list-item">
-        <div class="item-url">${esc(ep.path||'?')}</div>
-        <div class="item-status s${ep.status||0}">${ep.status}</div>
-        <div style="font-size:0.62rem;color:var(--muted)">${ep.size||0}B</div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🔗','API Endpoints',apiEps.length,apiHTML);
-  }
-
-  // Technologies
-  const techs=res.technologies||[];
-  if(techs.length) {
-    const tHTML=`<div style="display:flex;flex-wrap:wrap;gap:6px">
-      ${techs.map(t=>`<span class="tag tag-tech">🔧 ${esc(t.name)} <span style="opacity:0.5">(${t.category})</span></span>`).join('')}
-    </div>`;
-    c.innerHTML+=buildSection('🔧','Technologies',techs.length,tHTML);
-  }
-
-  // Directories
-  const d200=(res.directories||[]).filter(d=>d.status===200);
-  const d403=(res.directories||[]).filter(d=>[401,403].includes(d.status));
-  if(d200.length||d403.length) {
-    const dHTML=d200.map(d=>`
-      <div class="list-item">
-        <div class="item-url">/${esc(d.path)}</div>
-        <div class="item-status s200">200</div>
-        <div style="font-size:0.62rem;color:var(--muted)">${d.size||0}B</div>
-      </div>`).join('')+
-    d403.map(d=>`
-      <div class="list-item">
-        <div class="item-url">/${esc(d.path)}</div>
-        <div class="item-status s${d.status}">${d.status}</div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('📂','Répertoires',d200.length+d403.length,dHTML);
-  }
-
-  // DNS
-  const dns=res.dns||{};
-  const dnsEnt=Object.entries(dns).filter(([,v])=>v&&(Array.isArray(v)?v.length:true));
-  if(dnsEnt.length) {
-    const dHTML=dnsEnt.map(([type,recs])=>{
-      const arr=Array.isArray(recs)?recs:[recs];
-      return arr.slice(0,5).map(r=>`
-        <div class="dns-row">
-          <div class="dns-type">${type}</div>
-          <div class="dns-val">${esc(typeof r==='object'?JSON.stringify(r):String(r))}</div>
-        </div>`).join('');
-    }).join('');
-    c.innerHTML+=buildSection('🌐','DNS',dnsEnt.length,dHTML);
-  }
-
-  // WHOIS
-  const whois=res.whois||{};
-  const wEnt=Object.entries(whois).filter(([,v])=>v);
-  if(wEnt.length) {
-    const wHTML=wEnt.map(([k,v])=>`
-      <div class="list-item">
-        <div style="font-size:0.65rem;color:var(--muted);min-width:90px">${k.replace(/_/g,' ')}</div>
-        <div style="font-size:0.72rem;flex:1;word-break:break-all">${esc(String(v).slice(0,100))}</div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('📋','WHOIS',wEnt.length,wHTML);
-  }
-
-  // Subdomains (NEW v4.0)
-  const subs=res.subdomains||[];
-  if(subs.length) {
-    const subHTML=subs.slice(0,40).map(sub=>`
-      <div class="list-item">
-        <div class="item-url">${esc(sub.subdomain||'?')}</div>
-        <div style="font-size:0.65rem;color:var(--accent)">${esc((sub.ips||[]).join(', '))}</div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🌐','Sous-domaines',subs.length,subHTML);
-  }
-
-  // Takeover findings (NEW v4.0)
-  const toFinds=res.takeover_findings||[];
-  if(toFinds.length) {
-    const toHTML=toFinds.map(tf=>`
-      <div class="list-item">
-        <div style="flex:1">
-          <div class="item-url" style="color:var(--red)">🎯 ${esc(tf.subdomain||'?')}</div>
-          <div style="font-size:0.65rem;color:var(--orange)">→ ${esc(tf.service||'?')} [${esc(tf.confidence||'?')}]</div>
-          ${tf.detail?`<div style="font-size:0.6rem;color:var(--muted)">${esc(tf.detail)}</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🎯','Subdomain Takeover',toFinds.length,toHTML,true);
-  }
-
-  // JWT findings (NEW v4.0)
-  const jwtFinds=res.jwt_findings||[];
-  if(jwtFinds.length) {
-    const jwtHTML=jwtFinds.map(jf=>`
-      <div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px">
-        <div style="font-size:0.72rem">Alg: <span style="color:var(--accent)">${esc(jf.algorithm||'?')}</span>
-          ${jf.expired?'<span style="color:var(--orange)"> ⚠️ EXPIRÉ</span>':''}
-          ${jf.cracked_secret?'<span style="color:var(--red)"> 🚨 SECRET: '+esc(jf.cracked_secret)+'</span>':''}
-        </div>
-        ${(jf.vulnerabilities||[]).map(v=>`
-          <div style="font-size:0.65rem;color:${v.severity==='critical'?'var(--red)':v.severity==='high'?'var(--orange)':'var(--yellow)'}">
-            [${v.severity}] ${esc(v.name||'')}
-          </div>`).join('')}
-      </div>`).join('');
-    c.innerHTML+=buildSection('🔑','JWT Analysis',jwtFinds.length,jwtHTML);
-  }
-
-  // Login bruteforce (NEW v4.0)
-  const loginFinds=res.login_findings||[];
-  if(loginFinds.length) {
-    const loginHTML=loginFinds.map(lf=>`
-      <div class="list-item" style="background:rgba(255,71,87,0.08)">
-        <div style="flex:1">
-          <div style="font-size:0.75rem;color:var(--red);font-weight:700">🚨 Credentials compromis</div>
-          <div style="font-size:0.72rem">Login: <span style="color:var(--accent)">${esc(lf.username||'?')}</span> / <span style="color:var(--red)">${esc(lf.password||'?')}</span></div>
-          <div style="font-size:0.62rem;color:var(--muted)">${esc(lf.url||'?')}</div>
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🔑','Login Compromis',loginFinds.length,loginHTML,true);
-  }
-
-  // GraphQL (NEW v4.0)
-  const gqlFinds=res.graphql_findings||[];
-  if(gqlFinds.length) {
-    const gqlHTML=gqlFinds.map(gf=>`
-      <div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px">
-        <div class="item-url">${esc(gf.endpoint||'?')}</div>
-        ${gf.introspection_enabled?`<div style="font-size:0.65rem;color:var(--orange)">⚠️ Introspection ON — ${(gf.types||[]).length} types exposés</div>`:''}
-        ${(gf.queries||[]).length?`<div style="font-size:0.62rem;color:var(--muted)">Queries: ${esc((gf.queries||[]).slice(0,8).join(', '))}</div>`:''}
-        ${(gf.vulnerabilities||[]).map(v=>`
-          <div style="font-size:0.65rem;color:${v.severity==='critical'?'var(--red)':v.severity==='high'?'var(--orange)':'var(--yellow)'}">
-            [${v.severity}] ${esc(v.name||'')}
-          </div>`).join('')}
-      </div>`).join('');
-    c.innerHTML+=buildSection('🕸️','GraphQL',gqlFinds.length,gqlHTML);
-  }
-
-  // IDOR (NEW v4.0)
-  const idorFinds=[...(res.idor_findings||[])];
-  if(idorFinds.length) {
-    const idorHTML=idorFinds.map(idf=>`
-      <div class="list-item">
-        <div style="flex:1">
-          <div class="item-url" style="color:var(--red)">${esc(idf.url||idf.test_path||'?')}</div>
-          ${idf.param?`<div style="font-size:0.65rem;color:var(--orange)">Param: ${esc(idf.param)} (${idf.original_id}→${idf.test_id})</div>`:''}
-          ${Object.keys(idf.sensitive_data||{}).length?`<div style="font-size:0.62rem;color:var(--red)">Données sensibles: ${esc(Object.keys(idf.sensitive_data).join(', '))}</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🔓','IDOR',idorFinds.length,idorHTML,true);
-  }
-
-  // Param Miner (NEW v4.1)
-  const paramFinds=res.param_findings||[];
-  if(paramFinds.length) {
-    const pmHTML=paramFinds.map(pf=>`
-      <div class="list-item">
-        <div style="flex:1">
-          <div style="font-size:0.75rem;color:var(--accent)">?${esc(pf.param||'?')}=...</div>
-          <div style="font-size:0.65rem;color:var(--orange)">${esc(pf.note||'')}</div>
-          ${pf.reflected?'<div style="font-size:0.62rem;color:var(--red)">🚨 Valeur réfléchie → XSS possible</div>':''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🔎','Params Cachés',paramFinds.length,pmHTML);
-  }
-
-  // Cloud Scanner (NEW v4.1)
-  const cloudFinds=res.cloud_findings||[];
-  if(cloudFinds.length) {
-    const cfHTML=cloudFinds.map(cf=>`
-      <div class="list-item">
-        <div style="flex:1">
-          <div class="item-url" style="color:${cf.severity==='critical'?'var(--red)':cf.severity==='high'?'var(--orange)':'var(--yellow)'}">${esc(cf.url||cf.bucket||'?')}</div>
-          <div style="font-size:0.65rem;color:var(--muted)">${esc(cf.service||'')} — ${esc(cf.detail||'')}</div>
-        </div>
-        <div class="item-status s${cf.status||0}">${cf.status||'?'}</div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('☁️','Cloud Storage',cloudFinds.length,cfHTML,cloudFinds.some(f=>f.severity==='critical'));
-  }
-
-  // OSINT (NEW v4.1)
-  const osint=res.osint||{};
-  if(osint.emails?.length||osint.dorks?.length||osint.social) {
-    let osHTML='';
-    if(osint.emails?.length) {
-      osHTML+=`<div style="font-size:0.7rem;color:var(--accent);margin-bottom:4px">📧 Emails trouvés (${osint.emails.length})</div>`;
-      osHTML+=osint.emails.slice(0,10).map(e=>`<div class="list-item"><div class="item-url">${esc(e)}</div></div>`).join('');
-    }
-    if(osint.dorks?.length) {
-      osHTML+=`<div style="font-size:0.7rem;color:var(--accent);margin:8px 0 4px">🔍 Google Dorks (${osint.dorks.length})</div>`;
-      osHTML+=osint.dorks.slice(0,8).map(d=>`
-        <div class="list-item">
+  // ── Vulnerabilities ──────────────────────────────────────────
+  try {
+    const importantVulns=(res.vulnerabilities||[]).filter(v=>v.severity!=='info');
+    if(importantVulns.length) {
+      const sev_ord={critical:0,high:1,medium:2,low:3};
+      const sorted=[...importantVulns].sort((a,b)=>(sev_ord[a.severity]||4)-(sev_ord[b.severity]||4));
+      const vulnHTML=sorted.map(v=>`
+        <div class="vuln-item vuln-${v.severity||'low'}">
+          <div class="vsev vsev-${v.severity||'low'}">${v.severity||'?'}</div>
           <div style="flex:1">
-            <div style="font-size:0.65rem;color:var(--muted)">[${esc(d.category||'?')}]</div>
-            <div style="font-size:0.62rem;word-break:break-all">${esc(d.query||'')}</div>
+            <div class="vuln-name">${esc(v.name||'')}</div>
+            ${v.detail?`<div class="vuln-detail">${esc(String(v.detail).slice(0,150))}</div>`:''}
+            ${v.url?`<div style="font-size:0.6rem;color:var(--muted);margin-top:2px">${esc(String(v.url).slice(0,80))}</div>`:''}
           </div>
         </div>`).join('');
+      c.innerHTML+=buildSection('💥',`Vulnérabilités`,importantVulns.length,vulnHTML,true);
+      const badge=document.getElementById('badge-vulns');
+      badge.textContent=importantVulns.length;badge.style.display='inline-block';
     }
+  } catch(e){console.warn('[render] vulns:',e)}
+
+  // ── JS Secrets ───────────────────────────────────────────────
+  try {
+    const js=res.js||{};
+    if(js.secrets&&js.secrets.length) {
+      const jsHTML=js.secrets.map(sec=>`
+        <div class="secret-item">
+          <div class="secret-type">${esc(sec.type||'?')}</div>
+          <div class="secret-val">${esc((sec.value||'').slice(0,200))}</div>
+          <div style="font-size:0.6rem;color:var(--muted);margin-top:3px">Source: ${esc((sec.source||'').split('/').pop())}</div>
+        </div>`).join('')+
+      (js.endpoints&&js.endpoints.length?`<div style="margin-top:10px;font-size:0.7rem;color:var(--accent);margin-bottom:5px">🔗 Endpoints API (${js.endpoints.length}):</div>`+
+        js.endpoints.slice(0,15).map(ep=>`<div class="list-item"><div class="item-url">${esc(ep)}</div></div>`).join(''):'');
+      c.innerHTML+=buildSection('🔑','Secrets & Endpoints JS',js.secrets.length,jsHTML,true);
+    } else if(js.endpoints&&js.endpoints.length) {
+      const epHTML=js.endpoints.slice(0,20).map(ep=>
+        `<div class="list-item"><div class="item-url">${esc(ep)}</div></div>`).join('');
+      c.innerHTML+=buildSection('🔗',`Endpoints API (JS)`,js.endpoints.length,epHTML);
+    }
+  } catch(e){console.warn('[render] js:',e)}
+
+  // ── CMS ───────────────────────────────────────────────────────
+  try {
+    const cms=res.cms||{};
+    if(cms.cms) {
+      let cmsHTML=`<div class="cms-card">
+        <div class="cms-title">🎯 ${esc(cms.cms)}${cms.version?' <small>v'+esc(cms.version)+'</small>':''}</div>`;
+      if(cms.login_pages&&cms.login_pages.length){
+        cmsHTML+=`<div style="font-size:0.7rem;color:var(--muted);margin-bottom:5px">Pages login:</div>`;
+        cms.login_pages.slice(0,5).forEach(lp=>{cmsHTML+=`<div class="list-item"><div class="item-url">${esc(lp)}</div></div>`;});
+      }
+      if(cms.plugins&&cms.plugins.length){
+        cmsHTML+=`<div style="font-size:0.7rem;color:var(--muted);margin:8px 0 5px">Plugins (${cms.plugins.length}):</div>`;
+        cmsHTML+=cms.plugins.map(p=>`<span class="plugin-tag">${esc(p.name||'?')} v${esc(p.version||'?')}</span>`).join('');
+      }
+      cmsHTML+='</div>';
+      c.innerHTML+=buildSection('🎯',`CMS: ${cms.cms}`,1,cmsHTML);
+    }
+  } catch(e){console.warn('[render] cms:',e)}
+
+  // ── Email Security ────────────────────────────────────────────
+  try {
+    const emailSec=res.email_security||{};
+    if(emailSec.spf||emailSec.dmarc||emailSec.dkim) {
+      const grade=emailSec.grade||'?';
+      const spfOk=emailSec.spf&&emailSec.spf.found;
+      const dmarcOk=emailSec.dmarc&&emailSec.dmarc.found;
+      const dkimOk=emailSec.dkim&&emailSec.dkim.found;
+      const emailHTML=`
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">
+          <div class="email-grade grade-${grade}">${grade}</div>
+          <div>
+            <div style="font-weight:700;font-size:0.82rem">Sécurité Email</div>
+            <div style="font-size:0.68rem;color:var(--muted)">${emailSec.score||0}/10 points</div>
+          </div>
+        </div>
+        <div class="email-checks">
+          <div class="email-check ${spfOk?'check-ok':'check-fail'}">${spfOk?'✅':'❌'} SPF ${spfOk?emailSec.spf.policy||'ok':'absent'}</div>
+          <div class="email-check ${dmarcOk?'check-ok':'check-fail'}">${dmarcOk?'✅':'❌'} DMARC ${dmarcOk?'p='+emailSec.dmarc.policy:'absent'}</div>
+          <div class="email-check ${dkimOk?'check-ok':'check-fail'}">${dkimOk?'✅':'❌'} DKIM ${dkimOk?(emailSec.dkim.selectors||[]).slice(0,2).join(', '):'absent'}</div>
+          <div class="email-check ${emailSec.mx&&emailSec.mx.found?'check-ok':'check-fail'}">${emailSec.mx&&emailSec.mx.found?'✅':'❌'} MX ${emailSec.mx&&emailSec.mx.records?emailSec.mx.records.length+' serveur(s)':'absent'}</div>
+        </div>`;
+      c.innerHTML+=buildSection('📧','Sécurité Email',1,emailHTML);
+    }
+  } catch(e){console.warn('[render] email:',e)}
+
+  // ── Open Ports ───────────────────────────────────────────────
+  try {
+    const ports=(res.ports||[]).filter(p=>p.state==='open');
+    if(ports.length) {
+      const pHTML=`<table class="ports-table">
+        <tr><th>Port</th><th>Service</th><th>Risque</th><th>Banner</th></tr>
+        ${ports.map(p=>`<tr>
+          <td class="port-num">${p.port}</td>
+          <td>${esc(p.service||'?')}</td>
+          <td class="risk-${p.risk||'low'}">${(p.risk||'').toUpperCase()}</td>
+          <td style="font-size:0.65rem;color:var(--muted);max-width:100px;overflow:hidden">${esc((p.banner||'').slice(0,50))}</td>
+        </tr>`).join('')}
+      </table>`;
+      c.innerHTML+=buildSection('🔍','Ports ouverts',ports.length,pHTML);
+    }
+  } catch(e){console.warn('[render] ports:',e)}
+
+  // ── API Endpoints ─────────────────────────────────────────────
+  try {
+    const apiEps=res.api_endpoints||[];
+    if(apiEps.length) {
+      const apiHTML=apiEps.slice(0,30).map(ep=>`
+        <div class="list-item">
+          <div class="item-url">${esc(ep.path||String(ep))}</div>
+          <div class="item-status s${ep.status||0}">${ep.status||''}</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${ep.size||0}B</div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🔗','API Endpoints',apiEps.length,apiHTML);
+    }
+  } catch(e){console.warn('[render] api_endpoints:',e)}
+
+  // ── Technologies ──────────────────────────────────────────────
+  try {
+    const techs=res.technologies||[];
+    if(techs.length) {
+      const tHTML=`<div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${techs.map(t=>`<span class="tag tag-tech">🔧 ${esc(t.name||t)} <span style="opacity:0.5">(${t.category||''})</span></span>`).join('')}
+      </div>`;
+      c.innerHTML+=buildSection('🔧','Technologies',techs.length,tHTML);
+    }
+  } catch(e){console.warn('[render] technologies:',e)}
+
+  // ── Directories ───────────────────────────────────────────────
+  try {
+    const d200=(res.directories||[]).filter(d=>d.status===200);
+    const d403=(res.directories||[]).filter(d=>[401,403].includes(d.status));
+    if(d200.length||d403.length) {
+      const dHTML=d200.map(d=>`
+        <div class="list-item">
+          <div class="item-url">/${esc(d.path||'')}</div>
+          <div class="item-status s200">200</div>
+          <div style="font-size:0.62rem;color:var(--muted)">${d.size||0}B</div>
+        </div>`).join('')+
+      d403.map(d=>`
+        <div class="list-item">
+          <div class="item-url">/${esc(d.path||'')}</div>
+          <div class="item-status s${d.status}">${d.status}</div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('📂','Répertoires',d200.length+d403.length,dHTML);
+    }
+  } catch(e){console.warn('[render] directories:',e)}
+
+  // ── DNS ───────────────────────────────────────────────────────
+  try {
+    const dns=res.dns||{};
+    const dnsEnt=Object.entries(dns).filter(([,v])=>v&&(Array.isArray(v)?v.length:true));
+    if(dnsEnt.length) {
+      const dHTML=dnsEnt.map(([type,recs])=>{
+        const arr=Array.isArray(recs)?recs:[recs];
+        return arr.slice(0,5).map(r=>`
+          <div class="dns-row">
+            <div class="dns-type">${esc(type)}</div>
+            <div class="dns-val">${esc(typeof r==='object'?JSON.stringify(r):String(r))}</div>
+          </div>`).join('');
+      }).join('');
+      c.innerHTML+=buildSection('🌐','DNS',dnsEnt.length,dHTML);
+    }
+  } catch(e){console.warn('[render] dns:',e)}
+
+  // ── WHOIS ─────────────────────────────────────────────────────
+  try {
+    const whois=res.whois||{};
+    const wEnt=Object.entries(whois).filter(([,v])=>v);
+    if(wEnt.length) {
+      const wHTML=wEnt.map(([k,v])=>`
+        <div class="list-item">
+          <div style="font-size:0.65rem;color:var(--muted);min-width:90px">${esc(k.replace(/_/g,' '))}</div>
+          <div style="font-size:0.72rem;flex:1;word-break:break-all">${esc(String(v).slice(0,100))}</div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('📋','WHOIS',wEnt.length,wHTML);
+    }
+  } catch(e){console.warn('[render] whois:',e)}
+
+  // ── Subdomains ────────────────────────────────────────────────
+  try {
+    const subs=res.subdomains||[];
+    if(subs.length) {
+      const subHTML=subs.slice(0,40).map(sub=>`
+        <div class="list-item">
+          <div class="item-url">${esc(sub.subdomain||String(sub))}</div>
+          <div style="font-size:0.65rem;color:var(--accent)">${esc((sub.ips||[]).join(', '))}</div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🌐','Sous-domaines',subs.length,subHTML);
+    }
+  } catch(e){console.warn('[render] subdomains:',e)}
+
+  // ── Subdomain Takeover ────────────────────────────────────────
+  try {
+    const toFinds=res.takeover_findings||[];
+    if(toFinds.length) {
+      const toHTML=toFinds.map(tf=>`
+        <div class="list-item">
+          <div style="flex:1">
+            <div class="item-url" style="color:var(--red)">🎯 ${esc(tf.subdomain||'?')}</div>
+            <div style="font-size:0.65rem;color:var(--orange)">→ ${esc(tf.service||'?')} [${esc(tf.confidence||'?')}]</div>
+            ${tf.detail?`<div style="font-size:0.6rem;color:var(--muted)">${esc(tf.detail)}</div>`:''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🎯','Subdomain Takeover',toFinds.length,toHTML,true);
+    }
+  } catch(e){console.warn('[render] takeover:',e)}
+
+  // ── JWT ───────────────────────────────────────────────────────
+  try {
+    const jwtFinds=res.jwt_findings||[];
+    if(jwtFinds.length) {
+      const jwtHTML=jwtFinds.map(jf=>`
+        <div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px">
+          <div style="font-size:0.72rem">Alg: <span style="color:var(--accent)">${esc(jf.algorithm||'?')}</span>
+            ${jf.expired?'<span style="color:var(--orange)"> ⚠️ EXPIRÉ</span>':''}
+            ${jf.cracked_secret?'<span style="color:var(--red)"> 🚨 SECRET: '+esc(jf.cracked_secret)+'</span>':''}
+          </div>
+          ${(jf.vulnerabilities||[]).map(v=>`
+            <div style="font-size:0.65rem;color:${v.severity==='critical'?'var(--red)':v.severity==='high'?'var(--orange)':'var(--yellow)'}">
+              [${v.severity||'?'}] ${esc(v.name||'')}
+            </div>`).join('')}
+        </div>`).join('');
+      c.innerHTML+=buildSection('🔑','JWT Analysis',jwtFinds.length,jwtHTML);
+    }
+  } catch(e){console.warn('[render] jwt:',e)}
+
+  // ── Login Bruteforce ──────────────────────────────────────────
+  try {
+    const loginFinds=res.login_findings||[];
+    if(loginFinds.length) {
+      const loginHTML=loginFinds.map(lf=>`
+        <div class="list-item" style="background:rgba(255,71,87,0.08);border-left:3px solid var(--red)">
+          <div style="flex:1">
+            <div style="font-size:0.75rem;color:var(--red);font-weight:700">🚨 Credentials compromis</div>
+            <div style="font-size:0.72rem">Login: <span style="color:var(--accent)">${esc(lf.username||'?')}</span> : <span style="color:var(--red)">${esc(lf.password||'?')}</span></div>
+            <div style="font-size:0.62rem;color:var(--muted)">${esc(lf.url||'')}</div>
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🔑','Login Compromis',loginFinds.length,loginHTML,true);
+    }
+  } catch(e){console.warn('[render] login:',e)}
+
+  // ── GraphQL ───────────────────────────────────────────────────
+  try {
+    const gqlFinds=res.graphql_findings||[];
+    if(gqlFinds.length) {
+      const gqlHTML=gqlFinds.map(gf=>`
+        <div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px">
+          <div class="item-url">${esc(gf.endpoint||'?')}</div>
+          ${gf.introspection_enabled?`<div style="font-size:0.65rem;color:var(--orange)">⚠️ Introspection ON — ${(gf.types||[]).length} types exposés</div>`:''}
+          ${(gf.queries||[]).length?`<div style="font-size:0.62rem;color:var(--muted)">Queries: ${esc((gf.queries||[]).slice(0,8).join(', '))}</div>`:''}
+          ${(gf.vulnerabilities||[]).map(v=>`
+            <div style="font-size:0.65rem;color:${v.severity==='critical'?'var(--red)':v.severity==='high'?'var(--orange)':'var(--yellow)'}">
+              [${v.severity||'?'}] ${esc(v.name||'')}
+            </div>`).join('')}
+        </div>`).join('');
+      c.innerHTML+=buildSection('🕸️','GraphQL',gqlFinds.length,gqlHTML);
+    }
+  } catch(e){console.warn('[render] graphql:',e)}
+
+  // ── IDOR ──────────────────────────────────────────────────────
+  try {
+    const idorFinds=res.idor_findings||[];
+    if(idorFinds.length) {
+      const idorHTML=idorFinds.map(idf=>`
+        <div class="list-item">
+          <div style="flex:1">
+            <div class="item-url" style="color:var(--red)">${esc(idf.url||idf.test_path||'?')}</div>
+            ${idf.param?`<div style="font-size:0.65rem;color:var(--orange)">Param: ${esc(idf.param)} (${idf.original_id}→${idf.test_id})</div>`:''}
+            ${Object.keys(idf.sensitive_data||{}).length?`<div style="font-size:0.62rem;color:var(--red)">Données sensibles: ${esc(Object.keys(idf.sensitive_data).join(', '))}</div>`:''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🔓','IDOR',idorFinds.length,idorHTML,true);
+    }
+  } catch(e){console.warn('[render] idor:',e)}
+
+  // ── Param Miner ───────────────────────────────────────────────
+  try {
+    const paramFinds=res.param_findings||[];
+    if(paramFinds.length) {
+      const pmHTML=paramFinds.map(pf=>`
+        <div class="list-item">
+          <div style="flex:1">
+            <div style="font-size:0.75rem;color:var(--accent)">?${esc(pf.param||'?')}=...</div>
+            <div style="font-size:0.65rem;color:var(--orange)">${esc(pf.note||'')}</div>
+            ${pf.reflected?'<div style="font-size:0.62rem;color:var(--red)">🚨 Valeur réfléchie → XSS possible</div>':''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🔎','Params Cachés',paramFinds.length,pmHTML);
+    }
+  } catch(e){console.warn('[render] params:',e)}
+
+  // ── Cloud Scanner ─────────────────────────────────────────────
+  try {
+    const cloudFinds=res.cloud_findings||[];
+    if(cloudFinds.length) {
+      const cfHTML=cloudFinds.map(cf=>`
+        <div class="list-item">
+          <div style="flex:1">
+            <div class="item-url" style="color:${cf.severity==='critical'?'var(--red)':cf.severity==='high'?'var(--orange)':'var(--yellow)'}">${esc(cf.url||cf.bucket||'?')}</div>
+            <div style="font-size:0.65rem;color:var(--muted)">${esc(cf.service||'')} — ${esc(cf.detail||'')}</div>
+          </div>
+          <div class="item-status s${cf.status||0}">${cf.status||'?'}</div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('☁️','Cloud Storage',cloudFinds.length,cfHTML,cloudFinds.some(f=>f.severity==='critical'));
+    }
+  } catch(e){console.warn('[render] cloud:',e)}
+
+  // ── OSINT ─────────────────────────────────────────────────────
+  try {
+    const osint=res.osint||{};
+    const osintEmails=osint.emails||[];
+    const osintDorks=osint.dorks||[];
     const soc=osint.social||{};
     const socLinks=Object.entries(soc).filter(([,v])=>v);
-    if(socLinks.length) {
-      osHTML+=`<div style="font-size:0.7rem;color:var(--accent);margin:8px 0 4px">🌐 Social Media</div>`;
-      osHTML+=socLinks.map(([k,v])=>`<div class="list-item"><div class="item-url">${esc(k)}: ${esc(String(v).slice(0,60))}</div></div>`).join('');
+    if(osintEmails.length||osintDorks.length||socLinks.length) {
+      let osHTML='';
+      if(osintEmails.length){
+        osHTML+=`<div style="font-size:0.7rem;color:var(--accent);margin-bottom:4px">📧 Emails trouvés (${osintEmails.length})</div>`;
+        osHTML+=osintEmails.slice(0,10).map(e=>`<div class="list-item"><div class="item-url">${esc(e)}</div></div>`).join('');
+      }
+      if(osintDorks.length){
+        osHTML+=`<div style="font-size:0.7rem;color:var(--accent);margin:8px 0 4px">🔍 Google Dorks (${osintDorks.length})</div>`;
+        osHTML+=osintDorks.slice(0,8).map(d=>`
+          <div class="list-item"><div style="flex:1">
+            <div style="font-size:0.65rem;color:var(--muted)">[${esc(d.category||'?')}]</div>
+            <div style="font-size:0.62rem;word-break:break-all">${esc(d.query||'')}</div>
+          </div></div>`).join('');
+      }
+      if(socLinks.length){
+        osHTML+=`<div style="font-size:0.7rem;color:var(--accent);margin:8px 0 4px">🌐 Social</div>`;
+        osHTML+=socLinks.map(([k,v])=>`<div class="list-item"><div class="item-url">${esc(k)}: ${esc(String(v).slice(0,60))}</div></div>`).join('');
+      }
+      c.innerHTML+=buildSection('🕵️','OSINT Recon',osintEmails.length+osintDorks.length+socLinks.length,osHTML);
     }
-    const total=(osint.emails?.length||0)+(osint.dorks?.length||0)+socLinks.length;
-    c.innerHTML+=buildSection('🕵️','OSINT Recon',total,osHTML);
-  }
+  } catch(e){console.warn('[render] osint:',e)}
 
-  // Secret Scanner findings (v4.3)
-  const secretFinds=res.secret_findings||[];
-  if(secretFinds.length){
-    const secHTML=secretFinds.slice(0,30).map(sf=>`
-      <div class="secret-item">
-        <div class="secret-type">${esc(sf.type||sf.name||'?')}</div>
-        <div class="secret-val">${esc((sf.value||sf.detail||'').slice(0,150))}</div>
-        <div style="font-size:0.6rem;color:var(--muted);margin-top:3px">Source: ${esc((sf.source||'').slice(0,80))}</div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🔐','Secrets Exposés',secretFinds.length,secHTML,secretFinds.length>0);
-  }
+  // ── Secrets (v4.3) ────────────────────────────────────────────
+  try {
+    const secretFinds=res.secret_findings||[];
+    if(secretFinds.length) {
+      const secHTML=secretFinds.slice(0,30).map(sf=>`
+        <div class="secret-item">
+          <div class="secret-type">${esc(sf.type||sf.name||'?')}</div>
+          <div class="secret-val">${esc((sf.value||sf.detail||'').slice(0,150))}</div>
+          <div style="font-size:0.6rem;color:var(--muted);margin-top:3px">${esc((sf.source||'').slice(0,80))}</div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🔐','Secrets Exposés',secretFinds.length,secHTML,true);
+    }
+  } catch(e){console.warn('[render] secrets:',e)}
 
-  // CORS findings (v4.3)
-  const corsFinds=res.cors_findings||[];
-  if(corsFinds.length){
-    const corsHTML=corsFinds.map(cf=>`
-      <div class="vuln-item">
-        <div class="vsev vsev-${cf.severity||'medium'}">${cf.severity||'?'}</div>
-        <div>
-          <div class="vuln-name">${esc(cf.test||cf.name||'?')}</div>
-          ${cf.detail?`<div class="vuln-detail">${esc(String(cf.detail).slice(0,120))}</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🌍','CORS Misconfig',corsFinds.length,corsHTML,true);
-  }
+  // ── CORS (v4.3) ───────────────────────────────────────────────
+  try {
+    const corsFinds=res.cors_findings||[];
+    if(corsFinds.length) {
+      const corsHTML=corsFinds.map(cf=>`
+        <div class="vuln-item vuln-${cf.severity||'medium'}">
+          <div class="vsev vsev-${cf.severity||'medium'}">${cf.severity||'?'}</div>
+          <div>
+            <div class="vuln-name">${esc(cf.test||cf.name||'?')}</div>
+            ${cf.detail?`<div class="vuln-detail">${esc(String(cf.detail).slice(0,130))}</div>`:''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🌍','CORS Misconfig',corsFinds.length,corsHTML,true);
+    }
+  } catch(e){console.warn('[render] cors:',e)}
 
-  // HTTP Smuggling findings (v4.3)
-  const smugFinds=res.smuggling_findings||[];
-  if(smugFinds.length){
-    const smugHTML=smugFinds.map(sf=>`
-      <div class="vuln-item">
-        <div class="vsev vsev-${sf.severity||'critical'}">${sf.severity||'?'}</div>
-        <div>
-          <div class="vuln-name">🚇 ${esc(sf.test||'HTTP Smuggling')}</div>
-          ${sf.detail?`<div class="vuln-detail">${esc(String(sf.detail).slice(0,120))}</div>`:''}
-          ${sf.elapsed?`<div style="font-size:0.62rem;color:var(--orange)">Timing: ${sf.elapsed.toFixed(2)}s</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🚇','HTTP Smuggling',smugFinds.length,smugHTML,true);
-  }
+  // ── HTTP Smuggling (v4.3) ─────────────────────────────────────
+  try {
+    const smugFinds=res.smuggling_findings||[];
+    if(smugFinds.length) {
+      const smugHTML=smugFinds.map(sf=>`
+        <div class="vuln-item vuln-${sf.severity||'critical'}">
+          <div class="vsev vsev-${sf.severity||'critical'}">${sf.severity||'?'}</div>
+          <div>
+            <div class="vuln-name">🚇 ${esc(sf.test||'HTTP Smuggling')}</div>
+            ${sf.detail?`<div class="vuln-detail">${esc(String(sf.detail).slice(0,130))}</div>`:''}
+            ${sf.elapsed?`<div style="font-size:0.62rem;color:var(--orange)">⏱ ${Number(sf.elapsed).toFixed(2)}s</div>`:''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🚇','HTTP Smuggling',smugFinds.length,smugHTML,true);
+    }
+  } catch(e){console.warn('[render] smuggling:',e)}
 
-  // API Fuzzer findings (v4.3)
-  const apiFinds=res.api_findings||[];
-  if(apiFinds.length){
-    const apiHTML=apiFinds.map(af=>`
-      <div class="vuln-item">
-        <div class="vsev vsev-${af.severity||'high'}">${af.severity||'?'}</div>
-        <div>
-          <div class="vuln-name">${esc(af.test||af.name||'?')}</div>
-          ${af.detail?`<div class="vuln-detail">${esc(String(af.detail).slice(0,120))}</div>`:''}
-          ${af.url?`<div style="font-size:0.62rem;color:var(--muted)">${esc(af.url.slice(0,80))}</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🔗','API Security',apiFinds.length,apiHTML,true);
-  }
+  // ── API Security (v4.3) ───────────────────────────────────────
+  try {
+    const apiFinds=res.api_findings||[];
+    if(apiFinds.length) {
+      const apiHTML=apiFinds.map(af=>`
+        <div class="vuln-item vuln-${af.severity||'high'}">
+          <div class="vsev vsev-${af.severity||'high'}">${af.severity||'?'}</div>
+          <div>
+            <div class="vuln-name">${esc(af.test||af.name||'?')}</div>
+            ${af.detail?`<div class="vuln-detail">${esc(String(af.detail).slice(0,130))}</div>`:''}
+            ${af.url?`<div style="font-size:0.62rem;color:var(--muted)">${esc(String(af.url).slice(0,80))}</div>`:''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🔗','API Security',apiFinds.length,apiHTML,true);
+    }
+  } catch(e){console.warn('[render] api_findings:',e)}
 
-  // SSRF findings (v5.0)
-  const ssrfFinds=res.ssrf_findings||[];
-  if(ssrfFinds.length){
-    const ssrfHTML=ssrfFinds.map(sf=>`
-      <div class="vuln-item">
-        <div class="vsev vsev-${sf.severity||'high'}">${sf.severity||'?'}</div>
-        <div>
-          <div class="vuln-name">🌐 ${esc(sf.test||'SSRF')}</div>
-          ${sf.detail?`<div class="vuln-detail">${esc(String(sf.detail).slice(0,150))}</div>`:''}
-          ${sf.param?`<div style="font-size:0.62rem;color:var(--orange)">Param: ${esc(sf.param)} → ${esc((sf.payload||'').slice(0,50))}</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🌐','SSRF',ssrfFinds.length,ssrfHTML,true);
-  }
+  // ── SSRF (v5.0) ───────────────────────────────────────────────
+  try {
+    const ssrfFinds=res.ssrf_findings||[];
+    if(ssrfFinds.length) {
+      const ssrfHTML=ssrfFinds.map(sf=>`
+        <div class="vuln-item vuln-${sf.severity||'high'}">
+          <div class="vsev vsev-${sf.severity||'high'}">${sf.severity||'?'}</div>
+          <div>
+            <div class="vuln-name">🌐 ${esc(sf.test||'SSRF')}</div>
+            ${sf.detail?`<div class="vuln-detail">${esc(String(sf.detail).slice(0,150))}</div>`:''}
+            ${sf.param?`<div style="font-size:0.62rem;color:var(--orange)">Param: ${esc(sf.param)} → ${esc((sf.payload||'').slice(0,50))}</div>`:''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🌐','SSRF',ssrfFinds.length,ssrfHTML,true);
+    }
+  } catch(e){console.warn('[render] ssrf:',e)}
 
-  // SSTI findings (v5.0)
-  const sstiFinds=res.ssti_findings||[];
-  if(sstiFinds.length){
-    const sstiHTML=sstiFinds.map(sf=>`
-      <div class="vuln-item">
-        <div class="vsev vsev-${sf.severity||'critical'}">${sf.severity||'?'}</div>
-        <div>
-          <div class="vuln-name">🧩 ${esc(sf.test||'SSTI')}</div>
-          ${sf.detail?`<div class="vuln-detail">${esc(String(sf.detail).slice(0,150))}</div>`:''}
-          ${sf.engine?`<div style="font-size:0.62rem;color:var(--orange)">Engine: ${esc(sf.engine)}</div>`:''}
-        </div>
-      </div>`).join('');
-    c.innerHTML+=buildSection('🧩','SSTI Template Injection',sstiFinds.length,sstiHTML,true);
-  }
+  // ── SSTI (v5.0) ───────────────────────────────────────────────
+  try {
+    const sstiFinds=res.ssti_findings||[];
+    if(sstiFinds.length) {
+      const sstiHTML=sstiFinds.map(sf=>`
+        <div class="vuln-item vuln-${sf.severity||'critical'}">
+          <div class="vsev vsev-${sf.severity||'critical'}">${sf.severity||'?'}</div>
+          <div>
+            <div class="vuln-name">🧩 ${esc(sf.test||'SSTI')}</div>
+            ${sf.detail?`<div class="vuln-detail">${esc(String(sf.detail).slice(0,150))}</div>`:''}
+            ${sf.engine?`<div style="font-size:0.62rem;color:var(--orange)">Engine: ${esc(sf.engine)}</div>`:''}
+          </div>
+        </div>`).join('');
+      c.innerHTML+=buildSection('🧩','SSTI Template Injection',sstiFinds.length,sstiHTML,true);
+    }
+  } catch(e){console.warn('[render] ssti:',e)}
 
-  // Show download bar
+  // ── Final ─────────────────────────────────────────────────────
   document.getElementById('download-bar').classList.add('visible');
   document.getElementById('btn-dl-html').classList.remove('hidden');
   showTab('results');

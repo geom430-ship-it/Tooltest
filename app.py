@@ -1730,7 +1730,13 @@ def get_full_results(scan_id):
     res = full_scan_store.get(scan_id)
     if not res:
         return jsonify({"error": "Introuvable"}), 404
-    return jsonify(res)
+    # Safe JSON serialization — convert any non-serializable objects to strings
+    import json as _json
+    try:
+        safe = _json.loads(_json.dumps(res, default=str))
+    except Exception:
+        safe = res
+    return jsonify(safe)
 
 
 @app.route('/api/download/html/<scan_id>')

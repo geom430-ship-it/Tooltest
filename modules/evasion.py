@@ -196,31 +196,88 @@ def random_ua(mobile_weight=0.25, bot_weight=0.05):
         return random.choice(_UA_DESKTOP)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CHROME CLIENT HINTS (sec-ch-ua) — modern browser fingerprinting
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CHROME_HINTS = [
+    # (sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile, sec-ch-ua-platform-version)
+    ('"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"', '"Windows"', '?0', '"10.0.0"'),
+    ('"Chromium";v="123","Google Chrome";v="123","Not-A.Brand";v="99"', '"Windows"', '?0', '"10.0.0"'),
+    ('"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"', '"macOS"',   '?0', '"14.4.1"'),
+    ('"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"', '"Linux"',   '?0', '""'),
+    ('"Chromium";v="124","Google Chrome";v="124","Not-A.Brand";v="99"', '"Android"', '?1', '"14.0.0"'),
+    ('"Chromium";v="120","Google Chrome";v="120","Not-A.Brand";v="99"', '"Windows"', '?0', '"11.0.0"'),
+]
+
+# Realistic Sec-GPC values
+_SEC_GPC = [None, None, None, "1"]  # mostly absent, sometimes 1
+
+# Realistic priority headers
+_PRIORITY = ["u=0, i", "u=1", "u=3, i", None, None]
+
+
 def random_headers(include_ip_spoof=True, include_referrer=True, custom_host=None):
     """
-    Build a realistic HTTP header dict for one request.
+    Build a maximally realistic HTTP header dict for one request.
+    Includes Chrome Client Hints, Sec-Fetch-*, Priority headers.
     include_ip_spoof: add X-Forwarded-For / X-Real-IP
     include_referrer: add Referer header
     custom_host: override Host header (subdomain takeover tests etc.)
     """
     ua = random_ua()
+    is_chrome = "Chrome/" in ua and "Edg/" not in ua and "OPR/" not in ua
+    is_mobile  = "Mobile" in ua or "Android" in ua
+
     headers = {
         "User-Agent":       ua,
         "Accept":           random.choice(_ACCEPT_HTML),
         "Accept-Language":  random.choice(_ACCEPT_LANG),
         "Accept-Encoding":  random.choice(_ACCEPT_ENC),
-        "Connection":       "keep-alive",
+        "Connection":       random.choice(["keep-alive", "keep-alive"]),
         "Upgrade-Insecure-Requests": "1",
-        "Cache-Control":    random.choice(["no-cache", "max-age=0", ""]),
-        "DNT":              random.choice(["1", "0", None]),
-        "Sec-Fetch-Dest":   random.choice(["document", "empty", None]),
-        "Sec-Fetch-Mode":   random.choice(["navigate", "cors", None]),
-        "Sec-Fetch-Site":   random.choice(["none", "same-origin", "cross-site", None]),
+        "Cache-Control":    random.choice(["no-cache", "max-age=0", "no-cache", ""]),
     }
 
+    # Sec-Fetch-* headers (Chrome sends these)
+    if is_chrome and random.random() < 0.85:
+        headers["Sec-Fetch-Dest"] = "document"
+        headers["Sec-Fetch-Mode"] = "navigate"
+        headers["Sec-Fetch-Site"] = random.choice(["none", "cross-site"])
+        headers["Sec-Fetch-User"] = "?1"
+    elif random.random() < 0.3:
+        headers["Sec-Fetch-Dest"] = random.choice(["document", "empty"])
+        headers["Sec-Fetch-Mode"] = random.choice(["navigate", "cors"])
+        headers["Sec-Fetch-Site"] = random.choice(["none", "same-origin"])
+
+    # Chrome Client Hints (sec-ch-ua) — critical for bypassing modern WAFs
+    if is_chrome and random.random() < 0.75:
+        hint = random.choice(_CHROME_HINTS)
+        headers["sec-ch-ua"]                  = hint[0]
+        headers["sec-ch-ua-platform"]         = hint[1]
+        headers["sec-ch-ua-mobile"]           = "?1" if is_mobile else hint[2]
+        # Sometimes add platform version
+        if random.random() < 0.5:
+            headers["sec-ch-ua-platform-version"] = hint[3]
+
+    # DNT (not tracked)
+    dnt = random.choice(["1", None, None, None])
+    if dnt:
+        headers["DNT"] = dnt
+
+    # Sec-GPC (Global Privacy Control)
+    gpc = random.choice(_SEC_GPC)
+    if gpc:
+        headers["Sec-GPC"] = gpc
+
+    # Priority header (HTTP/2 style, Chrome 117+)
+    prio = random.choice(_PRIORITY)
+    if prio:
+        headers["Priority"] = prio
+
     # IP spoofing headers (WAF bypass — make it look like request from allowed network)
-    if include_ip_spoof and random.random() < 0.7:
-        ip = _rand_ip() if random.random() > 0.3 else random.choice(_FAKE_IPS)
+    if include_ip_spoof and random.random() < 0.65:
+        ip = _rand_ip() if random.random() > 0.35 else random.choice(_FAKE_IPS)
         spoof_headers = [
             "X-Forwarded-For",
             "X-Real-IP",
@@ -231,8 +288,8 @@ def random_headers(include_ip_spoof=True, include_referrer=True, custom_host=Non
             "CF-Connecting-IP",
             "X-Cluster-Client-IP",
         ]
-        # Pick 1-3 spoof headers
-        for h in random.sample(spoof_headers, k=random.randint(1, 3)):
+        # Pick 1-2 spoof headers (fewer = less suspicious)
+        for h in random.sample(spoof_headers, k=random.randint(1, 2)):
             headers[h] = ip
 
     # Referrer
@@ -288,13 +345,36 @@ def slow_jitter(min_s=0.5, max_s=2.5):
 
 
 def burst_jitter():
-    """Occasional longer pause to break traffic patterns"""
-    if random.random() < 0.05:     # 5% chance of long pause
-        time.sleep(random.uniform(3, 8))
-    elif random.random() < 0.15:   # 15% chance of short pause
-        time.sleep(random.uniform(0.5, 1.5))
-    else:
-        time.sleep(random.uniform(0.02, 0.25))
+    """
+    Intelligent jitter: mimics real browser request patterns.
+    - Occasionally long pause (page reading time)
+    - Frequent micro-pauses (browser processing)
+    - Rare total break (user distraction / tab switching)
+    """
+    r = random.random()
+    if r < 0.02:        # 2% — long break (user went for coffee)
+        time.sleep(random.uniform(8, 25))
+    elif r < 0.07:      # 5% — page read time
+        time.sleep(random.uniform(2.5, 7))
+    elif r < 0.20:      # 13% — normal page load gap
+        time.sleep(random.uniform(0.8, 2.2))
+    elif r < 0.45:      # 25% — fast click
+        time.sleep(random.uniform(0.15, 0.6))
+    else:               # 55% — rapid fire (API / XHR-style)
+        time.sleep(random.uniform(0.01, 0.12))
+
+
+def adaptive_jitter(requests_done=0, rate_limited=False):
+    """
+    Adaptive timing: slows down as requests accumulate or when rate-limited.
+    Use this in tight scan loops to avoid threshold triggers.
+    """
+    if rate_limited:
+        time.sleep(random.uniform(5, 15))
+        return
+    # Progressive slowdown every ~50 requests
+    base = 0.05 + (requests_done // 50) * 0.1
+    time.sleep(random.uniform(base, base + random.uniform(0.1, 0.5)))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -575,3 +655,88 @@ def stealth_request(session, method, url, **kwargs):
     burst_jitter()
     fn = session.get if method.upper() == "GET" else session.post
     return fn(url, headers=merged, **kwargs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SESSION ROTATION — switch identity periodically
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StealthRotator:
+    """
+    Manages a pool of session identities, rotating UA/headers every N requests.
+    Prevents WAFs from correlating many requests to one fingerprint.
+
+    Usage:
+        rotator = StealthRotator(rotate_every=20)
+        session = rotator.session
+        r = rotator.get(url)
+    """
+    def __init__(self, rotate_every=25, pool_size=3):
+        self.rotate_every  = rotate_every
+        self.pool_size     = pool_size
+        self._count        = 0
+        self._sessions     = []
+        self._cur          = 0
+        self._build_pool()
+
+    def _build_pool(self):
+        try:
+            import requests
+            requests.packages.urllib3.disable_warnings()
+        except ImportError:
+            return
+        self._sessions = [make_stealth_session(rotate_ua_per_req=True)
+                          for _ in range(self.pool_size)]
+
+    @property
+    def session(self):
+        if not self._sessions:
+            return None
+        return self._sessions[self._cur % len(self._sessions)]
+
+    def rotate(self):
+        """Force a session rotation."""
+        self._cur = (self._cur + 1) % max(len(self._sessions), 1)
+        self._count = 0
+
+    def _maybe_rotate(self):
+        self._count += 1
+        if self._count >= self.rotate_every:
+            self.rotate()
+
+    def get(self, url, **kwargs):
+        self._maybe_rotate()
+        return stealth_get(self.session, url, **kwargs) if self.session else None
+
+    def post(self, url, **kwargs):
+        self._maybe_rotate()
+        return stealth_post(self.session, url, **kwargs) if self.session else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TLS / FINGERPRINT HINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def tls_like_headers():
+    """
+    Extra headers that match common TLS fingerprints used by WAF bypass tools.
+    Based on Chrome 124 TLS/HTTP2 fingerprint.
+    """
+    return {
+        "te":              "trailers",          # HTTP/2 trailer support
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+    }
+
+
+def anti_bot_headers():
+    """
+    Headers that some anti-bot systems check for.
+    Having these makes requests look more legitimate.
+    """
+    hdrs = random_headers(include_ip_spoof=False, include_referrer=False)
+    # Add some very browser-specific headers
+    if random.random() < 0.6:
+        hdrs["Purpose"] = "prefetch"
+    if random.random() < 0.4:
+        hdrs["X-Requested-With"] = random.choice(["XMLHttpRequest", None]) or "XMLHttpRequest"
+    return hdrs
