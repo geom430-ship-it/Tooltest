@@ -97,23 +97,43 @@ def run_scan_with_queue(scan_func, scan_id, *args, **kwargs):
 
 
 def stream_scan(scan_id):
-    """Generator for SSE streaming of scan results — keepalive every 15s for Android"""
+    """
+    Generator for SSE streaming of scan results.
+    Keepalive every 10s — Android kills SSE after ~15s idle, iOS after ~20s.
+    If the scan is already complete when client (re)connects, sends done_full immediately.
+    """
     q = scan_queues.get(scan_id)
     if not q:
-        yield f"data: {json.dumps({'type': 'error', 'message': 'Scan not found'})}\n\n"
+        # If the scan is already done, tell the client immediately
+        if scan_id in full_scan_store:
+            yield f"data: {json.dumps({'type': 'done_full', 'message': 'SCAN_COMPLETE'})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Scan introuvable'})}\n\n"
+        return
+
+    # If already complete (queue consumed by previous connection), signal done
+    if scan_id in full_scan_store:
+        yield f"data: {json.dumps({'type': 'done_full', 'message': 'SCAN_COMPLETE'})}\n\n"
         return
 
     while True:
         try:
-            msg = q.get(timeout=15)   # 15s keepalive — Android kills 30s idle SSE
+            msg = q.get(timeout=10)   # 10s keepalive — safe for Android
             try:
                 payload = json.dumps(msg, ensure_ascii=False, default=str)
             except Exception:
                 payload = json.dumps({"type": "info", "message": str(msg)})
             yield f"data: {payload}\n\n"
             if msg.get("type") == "done":
+                # After "done", also check if full results are stored and signal
+                if scan_id in full_scan_store:
+                    yield f"data: {json.dumps({'type': 'done_full', 'message': 'SCAN_COMPLETE'})}\n\n"
                 break
         except queue.Empty:
+            # If scan completed while we were waiting, signal the client
+            if scan_id in full_scan_store:
+                yield f"data: {json.dumps({'type': 'done_full', 'message': 'SCAN_COMPLETE'})}\n\n"
+                break
             yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
 
 
@@ -1723,6 +1743,20 @@ def download_db(scan_id):
         json.dump(db_data, f, indent=2, ensure_ascii=False, default=str)
 
     return send_file(path, as_attachment=True, download_name=fname, mimetype="application/json")
+
+
+@app.route('/api/fullscan/status/<scan_id>')
+def get_scan_status(scan_id):
+    """
+    Check whether a fullscan is running or complete.
+    Returns: {"status": "complete"} | {"status": "running"} | {"status": "error"} | {"status": "unknown"}
+    Used by the frontend when SSE reconnects to decide whether to re-listen or fetch results.
+    """
+    if scan_id in full_scan_store:
+        return jsonify({"status": "complete"})
+    store = scan_results_store.get(scan_id, {})
+    status = store.get("status", "unknown")
+    return jsonify({"status": status})
 
 
 @app.route('/api/fullscan/results/<scan_id>')

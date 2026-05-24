@@ -440,6 +440,7 @@ const BASE = window.location.origin;  // e.g. http://127.0.0.1:5000
 
 // ─── STATE ───────────────────────────────────────────────────────
 let scanning = false, curScanId = null, curSrc = null, scanResults = null;
+let _scanAbort = false;   // set true when user stops scan — kills all pending retries
 
 // ─── AUTO HEALTH CHECK ───────────────────────────────────────────
 window.addEventListener('load', () => {
@@ -517,14 +518,22 @@ function startScan() {
   document.getElementById('progress-section').classList.add('visible');
   setProgress(0,TOTAL,'Connexion...');
 
+  _scanAbort=false;
   fetch(BASE+'/api/fullscan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})})
   .then(r=>r.json())
   .then(data=>{
     if(data.error){log('❌ '+data.error,'error');stopScan();return}
     curScanId=data.scan_id;
-    let scanDone=false;  // flag: prevents onerror from overriding completed scan
+    let scanDone=false;
+    let streamReconnects=0;
+    const MAX_RECONNECTS=6;
+    let pollTimer=null;
 
+    // ── Fetch & render final results ──────────────────────────
     function fetchAndRender(){
+      if(_scanAbort) return;
+      if(pollTimer){clearTimeout(pollTimer);pollTimer=null;}
+      setProgress(TOTAL,TOTAL,'⬇️ Récupération des résultats...');
       fetch(BASE+'/api/fullscan/results/'+curScanId)
         .then(r=>{
           if(!r.ok) throw new Error('HTTP '+r.status);
@@ -532,64 +541,121 @@ function startScan() {
         })
         .then(res=>{
           if(!res||res.error){
-            log('❌ Serveur: '+(res&&res.error||'Résultats introuvables'),'error');
-            stopScan(); return;
+            // Results not ready yet — check status and retry
+            log('⏳ Résultats pas encore prêts — nouvelle tentative dans 4s...','warn');
+            pollTimer=setTimeout(()=>checkStatusThenAct(),4000);
+            return;
           }
           scanResults=res;
           stopScan(true);
-          // Render in try/catch — show what we have even on partial error
-          try {
-            renderResults(res);
-          } catch(renderErr) {
-            console.error('renderResults error:', renderErr);
-            log('⚠️ Erreur rendu partiel: '+renderErr.message,'warn');
-            // Fallback: show raw summary
+          try{renderResults(res);}
+          catch(renderErr){
+            console.error('renderResults error:',renderErr);
+            log('⚠️ Erreur rendu: '+renderErr.message,'warn');
             renderFallback(res);
           }
         })
         .catch(e=>{
-          log('❌ Récupération résultats: '+e.message,'error');
-          log('💡 Le scan a peut-être bien terminé — réessaie dans 3s...','warn');
-          // Retry once after 3 seconds
-          setTimeout(()=>{
-            fetch(BASE+'/api/fullscan/results/'+curScanId)
-              .then(r=>r.json()).then(res=>{
-                if(res&&!res.error){scanResults=res;try{renderResults(res);}catch(e){renderFallback(res);}}
-              }).catch(()=>{});
-          }, 3000);
-          stopScan();
+          log('⚠️ Erreur réseau résultats: '+e.message+' — réessai dans 5s...','warn');
+          pollTimer=setTimeout(()=>fetchAndRender(),5000);
         });
     }
 
-    const src=new EventSource(BASE+'/api/stream/'+data.scan_id);
-    curSrc=src;
-    src.onmessage=e=>{
-      let evt;
-      try{evt=JSON.parse(e.data);}catch(err){return;}
-      if(evt.type==='progress'){if(evt.step!==undefined)setProgress(evt.step,evt.total||TOTAL,evt.label||'');return}
-      if(evt.type==='section'){log(evt.message,'section');return}
-      if(evt.type==='done_full'){
-        scanDone=true;
-        src.close(); curSrc=null;  // close stream cleanly before fetching
-        setProgress(TOTAL,TOTAL,'⬇️ Récupération des résultats...');
-        fetchAndRender();
-        return;
-      }
-      if(evt.type==='done'||evt.type==='keepalive')return;
-      if(evt.message)log(evt.message,evt.type||'info');
-    };
-    src.onerror=()=>{
-      src.close(); curSrc=null;
-      if(!scanning) return;
-      if(scanDone) return;  // scan completed normally, stream just closed
-      // Stream died unexpectedly — try to get results anyway
-      log('⚠️ Stream interrompu — tentative de récupération des résultats...','warn');
-      if(curScanId){
-        fetchAndRender();
-      } else {
-        stopScan();
-      }
-    };
+    // ── Poll until scan is complete ───────────────────────────
+    function pollUntilDone(){
+      if(!scanning||scanDone||_scanAbort) return;
+      log('⏳ Scan en cours — vérification dans 6s...','info');
+      pollTimer=setTimeout(()=>{
+        if(!scanning||scanDone) return;
+        fetch(BASE+'/api/fullscan/status/'+curScanId)
+          .then(r=>r.json())
+          .then(st=>{
+            if(st.status==='complete'){
+              log('✅ Scan terminé — chargement des résultats...','ok');
+              fetchAndRender();
+            } else if(st.status==='running'||st.status==='unknown'){
+              pollUntilDone();  // keep polling
+            } else {
+              log('❌ Scan échoué côté serveur','error');
+              stopScan();
+            }
+          })
+          .catch(()=>pollUntilDone()); // network hiccup, keep polling
+      }, 6000);
+    }
+
+    // ── Check status, then reconnect SSE or fetch ─────────────
+    function checkStatusThenAct(){
+      if(!scanning||scanDone||_scanAbort) return;
+      fetch(BASE+'/api/fullscan/status/'+curScanId)
+        .then(r=>r.json())
+        .then(st=>{
+          if(st.status==='complete'){
+            log('✅ Scan terminé — chargement des résultats...','ok');
+            fetchAndRender();
+          } else if(streamReconnects<MAX_RECONNECTS){
+            // Scan still running — reconnect SSE
+            const delay=Math.min(1500*streamReconnects+1000,8000);
+            log(`🔄 Stream SSE coupé (${streamReconnects}/${MAX_RECONNECTS}) — reconnexion dans ${(delay/1000).toFixed(1)}s...`,'warn');
+            pollTimer=setTimeout(()=>{
+              if(!scanning||scanDone) return;
+              connectStream();
+            },delay);
+          } else {
+            // Too many reconnects — fall back to polling
+            log('📡 SSE instable — passage en mode polling (toutes les 6s)...','warn');
+            pollUntilDone();
+          }
+        })
+        .catch(()=>{
+          // Can't even reach server — back-off and retry
+          const delay=Math.min(3000*(streamReconnects+1),15000);
+          log('⚠️ Serveur injoignable — réessai dans '+(delay/1000)+'s...','warn');
+          pollTimer=setTimeout(()=>checkStatusThenAct(),delay);
+        });
+    }
+
+    // ── Connect (or reconnect) the SSE stream ─────────────────
+    function connectStream(){
+      if(_scanAbort) return;
+      if(curSrc){try{curSrc.close();}catch(e){} curSrc=null;}
+      const src=new EventSource(BASE+'/api/stream/'+curScanId);
+      curSrc=src;
+
+      src.onmessage=e=>{
+        let evt;
+        try{evt=JSON.parse(e.data);}catch(err){return;}
+        streamReconnects=0;  // reset on successful message reception
+
+        if(evt.type==='progress'){
+          if(evt.step!==undefined) setProgress(evt.step,evt.total||TOTAL,evt.label||'');
+          return;
+        }
+        if(evt.type==='section'){log(evt.message,'section');return;}
+        if(evt.type==='done_full'){
+          scanDone=true;
+          src.close(); curSrc=null;
+          fetchAndRender();
+          return;
+        }
+        if(evt.type==='done'||evt.type==='keepalive') return;
+        if(evt.message) log(evt.message,evt.type||'info');
+      };
+
+      src.onerror=()=>{
+        src.close(); curSrc=null;
+        if(!scanning) return;
+        if(scanDone){fetchAndRender();return;}
+        streamReconnects++;
+        // Don't show error on first hiccup — just silently reconnect
+        if(streamReconnects>1)
+          log('⚠️ Stream interrompu — vérification du statut...','warn');
+        checkStatusThenAct();
+      };
+    }
+
+    // ── Kick off the first SSE connection ─────────────────────
+    connectStream();
   })
   .catch(e=>{
     log('❌ Erreur réseau: ' + e, 'error');
@@ -600,14 +666,15 @@ function startScan() {
 }
 
 function stopScan(completed=false) {
-  if(curSrc){curSrc.close();curSrc=null}
+  _scanAbort=true;   // kills all pending retries & poll timers
+  if(curSrc){try{curSrc.close();}catch(e){} curSrc=null;}
   scanning=false;
   const btn=document.getElementById('btn-scan');
   btn.className='btn-scan';
   document.getElementById('scan-icon').className='';
   document.getElementById('scan-icon').textContent='⚡';
   document.getElementById('scan-label').textContent='SCANNER';
-  if(!completed)document.getElementById('progress-section').classList.remove('visible');
+  if(!completed) document.getElementById('progress-section').classList.remove('visible');
   else setProgress(TOTAL,TOTAL,'✅ Scan terminé !');
 }
 
