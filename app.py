@@ -1,5 +1,5 @@
 """
-UHQKYRA v4.3 - Web-Based Penetration Testing Tool
+UHQKYRA v5.0 - Web-Based Penetration Testing Tool
 Flask backend with real-time streaming via SSE
 ⚠️  AUTHORIZED SECURITY TESTING ONLY — UHQKYRA
 """
@@ -49,6 +49,14 @@ from modules.takeover_checker import check_takeover
 from modules.param_miner import mine_params
 from modules.osint_recon import run_osint
 from modules.cloud_scanner import scan_cloud
+# New modules v4.3
+from modules.secret_scanner import scan_secrets
+from modules.cors_scanner import scan_cors
+from modules.http_smuggling import scan_http_smuggling
+from modules.api_fuzzer import scan_api
+# New modules v5.0
+from modules.ssrf_scanner import scan_ssrf
+from modules.ssti_scanner import scan_ssti
 
 app = Flask(__name__)
 CORS(app)
@@ -640,10 +648,10 @@ def generate_dorks(target, category="all"):
 # Store full scan results for download
 full_scan_store = {}
 
-TOTAL_STEPS = 21
+TOTAL_STEPS = 27
 
 def full_auto_scan(url, scan_id, callback):
-    """Run all modules automatically on a target URL — v4.1 — 21 steps, 25 modules"""
+    """Run all modules automatically on a target URL — v5.0 — 27 steps, 32 modules"""
     import socket, urllib.parse
 
     results = {
@@ -676,6 +684,12 @@ def full_auto_scan(url, scan_id, callback):
         "param_findings": [],
         "osint": {},
         "cloud_findings": [],
+        "secret_findings": [],
+        "cors_findings":   [],
+        "smuggling_findings": [],
+        "api_findings":    [],
+        "ssrf_findings":   [],
+        "ssti_findings":   [],
         "summary": {}
     }
 
@@ -691,7 +705,7 @@ def full_auto_scan(url, scan_id, callback):
         results["ip"] = "N/A"
 
     callback({"type": "info", "message": f"🎯 Cible : {domain} ({results['ip']})"})
-    callback({"type": "info", "message": f"🚀 UHQKYRA v4.3 — Scan complet ({TOTAL_STEPS} étapes, 26 modules)..."})
+    callback({"type": "info", "message": f"🚀 UHQKYRA v5.0 — Scan complet ({TOTAL_STEPS} étapes, 32 modules)..."})
     callback({"type": "progress", "step": 0, "total": TOTAL_STEPS, "label": "Démarrage..."})
 
     # ── STEP 1 : WHOIS + GeoIP ──────────────────────────────
@@ -1191,9 +1205,79 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"Cloud scan: {e}"})
 
-    # ── STEP 21 : SUMMARY ───────────────────────────────────
+    # ── STEP 19 : SECRET SCANNER ────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔍 SECRET SCANNER (API KEYS / TOKENS) ━━━━━━━━━━"})
+    callback({"type": "progress", "step": 19, "total": TOTAL_STEPS, "label": "Secrets..."})
+    try:
+        sec_data = scan_secrets(url, callback=callback)
+        results["secret_findings"] = sec_data.get("findings", [])
+        for v in sec_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"Secret scanner: {e}"})
+
+    # ── STEP 20 : CORS SCANNER ──────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🌐 CORS MISCONFIGURATION SCAN ━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 20, "total": TOTAL_STEPS, "label": "CORS..."})
+    try:
+        cors_data = scan_cors(url, callback=callback)
+        results["cors_findings"] = cors_data.get("findings", [])
+        for v in cors_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"CORS: {e}"})
+
+    # ── STEP 21 : HTTP SMUGGLING ─────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🚇 HTTP REQUEST SMUGGLING ━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 21, "total": TOTAL_STEPS, "label": "HTTP Smuggling..."})
+    try:
+        smug_data = scan_http_smuggling(url, callback=callback)
+        results["smuggling_findings"] = smug_data.get("findings", [])
+        for v in smug_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"HTTP Smuggling: {e}"})
+
+    # ── STEP 22 : API FUZZER ─────────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🔗 API SECURITY FUZZER ━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 22, "total": TOTAL_STEPS, "label": "API fuzzing..."})
+    try:
+        api_data = scan_api(url, callback=callback)
+        results["api_findings"] = api_data.get("findings", [])
+        for v in api_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+        if api_data.get("endpoints_found"):
+            for ep in api_data["endpoints_found"][:20]:
+                if ep.get("status") == 200:
+                    results["api_endpoints"].append(ep)
+    except Exception as e:
+        callback({"type": "warn", "message": f"API fuzzer: {e}"})
+
+    # ── STEP 23 : SSRF SCANNER ───────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🌐 SSRF Scanner ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 23, "total": TOTAL_STEPS, "label": "SSRF..."})
+    try:
+        ssrf_data = scan_ssrf(url, callback=callback)
+        results["ssrf_findings"] = ssrf_data.get("findings", [])
+        for v in ssrf_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"SSRF scanner: {e}"})
+
+    # ── STEP 24 : SSTI SCANNER ───────────────────────────────
+    callback({"type": "section", "message": "\n━━━ 🧩 SSTI Scanner ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
+    callback({"type": "progress", "step": 24, "total": TOTAL_STEPS, "label": "SSTI..."})
+    try:
+        ssti_data = scan_ssti(url, callback=callback)
+        results["ssti_findings"] = ssti_data.get("findings", [])
+        for v in ssti_data.get("vulnerabilities", []):
+            results["vulnerabilities"].append(v)
+    except Exception as e:
+        callback({"type": "warn", "message": f"SSTI scanner: {e}"})
+
+    # ── STEP 25 : SUMMARY ───────────────────────────────────
     callback({"type": "section", "message": "\n━━━ 📊 RAPPORT FINAL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"})
-    callback({"type": "progress", "step": 21, "total": TOTAL_STEPS, "label": "Finalisation..."})
+    callback({"type": "progress", "step": 25, "total": TOTAL_STEPS, "label": "Finalisation..."})
 
     # Deduplicate vulnerabilities
     seen = set()
@@ -1245,6 +1329,14 @@ def full_auto_scan(url, scan_id, callback):
         "cloud_findings": len(results["cloud_findings"]),
         "osint_emails": len(results["osint"].get("emails", [])),
         "osint_dorks": len(results["osint"].get("dorks", [])),
+        # New v4.3
+        "secret_findings":    len(results["secret_findings"]),
+        "cors_findings":      len(results["cors_findings"]),
+        "smuggling_findings": len(results["smuggling_findings"]),
+        "api_findings":       len(results["api_findings"]),
+        # New v5.0
+        "ssrf_findings":      len(results["ssrf_findings"]),
+        "ssti_findings":      len(results["ssti_findings"]),
     }
 
     full_scan_store[scan_id] = results
@@ -1288,7 +1380,7 @@ def download_txt(scan_id):
 
     lines = []
     lines.append("=" * 65)
-    lines.append(f"  UHQKYRA v4.3 — RAPPORT D'AUDIT DE SÉCURITÉ (26 modules)")
+    lines.append(f"  UHQKYRA v5.0 — RAPPORT D'AUDIT DE SÉCURITÉ (32 modules)")
     lines.append("=" * 65)
     lines.append(f"Cible     : {res['url']}")
     lines.append(f"Domaine   : {res['domain']}")
@@ -1561,7 +1653,7 @@ def download_txt(scan_id):
 
     lines.append("=" * 65)
     lines.append("  ⚠️  RAPPORT CONFIDENTIEL — USAGE AUTORISÉ UNIQUEMENT")
-    lines.append(f"  Généré par UHQKYRA v4.3 (26 modules) — {res['scan_time']}")
+    lines.append(f"  Généré par UHQKYRA v5.0 (32 modules) — {res['scan_time']}")
     lines.append("=" * 65)
 
     content = "\n".join(lines)
@@ -1720,7 +1812,7 @@ def api_api_discover():
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='UHQKYRA v4.3')
+    parser = argparse.ArgumentParser(description='UHQKYRA v5.0')
     parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5000)), help='Port (default: 5000)')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host (default: 0.0.0.0)')
     args = parser.parse_args()
@@ -1728,11 +1820,11 @@ if __name__ == '__main__':
     os.makedirs('reports', exist_ok=True)
     print(f"""
 ╔══════════════════════════════════════════════════╗
-║          UHQKYRA v4.3 — Web Security Tool       ║
+║          UHQKYRA v5.0 — Web Security Tool       ║
 ║   ⚠️  Authorized security testing only — UHQKYRA ║
 ╠══════════════════════════════════════════════════╣
 ║  🌐 Interface : http://127.0.0.1:{args.port:<16}║
-║  📡 26 modules · 21 étapes · Stealth engine     ║
+║  📡 32 modules · 27 étapes · Stealth engine     ║
 ║  🛡️  SQLi · Bruteforce · WAF bypass · OSINT     ║
 ╚══════════════════════════════════════════════════╝
     """)
