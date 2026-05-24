@@ -118,7 +118,7 @@ def stream_scan(scan_id):
 
     while True:
         try:
-            msg = q.get(timeout=10)   # 10s keepalive — safe for Android
+            msg = q.get(timeout=5)   # 5s keepalive — Android-safe, prevents idle kill
             try:
                 payload = json.dumps(msg, ensure_ascii=False, default=str)
             except Exception:
@@ -134,7 +134,8 @@ def stream_scan(scan_id):
             if scan_id in full_scan_store:
                 yield f"data: {json.dumps({'type': 'done_full', 'message': 'SCAN_COMPLETE'})}\n\n"
                 break
-            yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
+            # Keepalive — prevents Android/iOS from killing idle SSE connections
+            yield f"data: {json.dumps({'type': 'keepalive', 'ts': int(time.time())})}\n\n"
 
 
 # ============================================================
@@ -1095,9 +1096,35 @@ def full_auto_scan(url, scan_id, callback):
     except Exception as e:
         callback({"type": "warn", "message": f"Advanced vuln: {e}"})
 
-    # SQLi/XSS/LFI if URL has params
+    # ── INJECTION TESTS + DB EXTRACTION (always runs) ──────────────────────────
+    callback({"type": "section", "message": "\n━━━ 💉 INJECTION TESTS + DB EXTRACTION ━━━━━━━━━━━━━"})
+
+    # Always run full DB extraction — detects its own injection internally (v7.0)
+    # Stores _scan_meta even when not injectable (shows what was tried in UI)
+    try:
+        callback({"type": "info", "message": "🗄️ DB Extraction v7.0 — test injection + extraction..."})
+        db_res = full_db_extraction(
+            url, param=None, mode="creds",
+            callback=callback, test_headers=True
+        )
+        info = db_res.get("info", {})
+        db_res["version"]      = info.get("version",    db_res.get("version", ""))
+        db_res["current_user"] = info.get("user",       db_res.get("current_user", ""))
+        db_res["current_db"]   = info.get("current_db", db_res.get("current_db", ""))
+        results["database"] = db_res
+        if db_res.get("injectable"):
+            for v in db_res.get("vulnerabilities", []):
+                results["vulnerabilities"].append(v)
+            creds = db_res.get("credentials", {}).get("_creds_summary", [])
+            if creds:
+                callback({"type": "vuln", "message": f"🚨 {len(creds)} CREDENTIALS EXTRAITS!"})
+    except Exception as e:
+        callback({"type": "warn", "message": f"DB extraction: {e}"})
+        results["database"] = {"injectable": False, "_scan_meta": {"params_tested": [], "error": str(e)}}
+
+    # Additional injection vectors (XSS, LFI, etc.) only if URL has params
     if "?" in url and "=" in url:
-        callback({"type": "info", "message": "💉 Paramètres URL détectés — injection tests..."})
+        callback({"type": "info", "message": "💉 Paramètres URL — tests XSS/LFI/redirect..."})
         try:
             sqli = test_sqli(url, callback=callback)
             if sqli.get("vulnerable"):
@@ -1107,28 +1134,6 @@ def full_auto_scan(url, scan_id, callback):
                         "name": f"SQL Injection : {f.get('type','')} (param: {f.get('param','')})",
                         "detail": f.get("payload", "")
                     })
-                callback({"type": "vuln", "message": "🗄️  SQLi confirmée — extraction DB pro (v6.0)..."})
-                try:
-                    first_param = sqli["findings"][0].get("param", None)
-                    db_res = full_db_extraction(
-                        url, param=first_param, mode="creds",
-                        callback=callback, test_headers=True
-                    )
-                    # Normalize structure for display
-                    info = db_res.get("info", {})
-                    db_res["version"]      = info.get("version", db_res.get("version", ""))
-                    db_res["current_user"] = info.get("user", db_res.get("current_user", ""))
-                    db_res["current_db"]   = info.get("current_db", db_res.get("current_db", ""))
-                    results["database"] = db_res
-                    # Add credential vulnerabilities
-                    for v in db_res.get("vulnerabilities", []):
-                        results["vulnerabilities"].append(v)
-                    creds = db_res.get("credentials", {}).get("_creds_summary", [])
-                    if creds:
-                        callback({"type": "vuln", "message": f"🚨 {len(creds)} CREDENTIALS EXTRAITS!"})
-                    callback({"type": "vuln", "message": "🚨 BASE DE DONNÉES EXTRAITE !"})
-                except Exception as de:
-                    callback({"type": "warn", "message": f"DB extraction: {de}"})
         except Exception as e:
             callback({"type": "warn", "message": f"SQLi: {e}"})
 

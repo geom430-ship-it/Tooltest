@@ -320,6 +320,7 @@ html,body{height:100%;background:var(--bg);color:var(--text);
 .fade-up{animation:fadeUp .25s ease}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spin{animation:spin 1s linear infinite;display:inline-block}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.6}}
 
 /* TAG */
 .tag{display:inline-block;padding:2px 7px;border-radius:4px;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
@@ -564,7 +565,7 @@ function startScan() {
     // ── Poll until scan is complete ───────────────────────────
     function pollUntilDone(){
       if(!scanning||scanDone||_scanAbort) return;
-      log('⏳ Scan en cours — vérification dans 6s...','info');
+      console.log('[POLL] checking status...');
       pollTimer=setTimeout(()=>{
         if(!scanning||scanDone) return;
         fetch(BASE+'/api/fullscan/status/'+curScanId)
@@ -594,16 +595,16 @@ function startScan() {
             log('✅ Scan terminé — chargement des résultats...','ok');
             fetchAndRender();
           } else if(streamReconnects<MAX_RECONNECTS){
-            // Scan still running — reconnect SSE
+            // Scan still running — silently reconnect SSE after backoff
             const delay=Math.min(1500*streamReconnects+1000,8000);
-            log(`🔄 Stream SSE coupé (${streamReconnects}/${MAX_RECONNECTS}) — reconnexion dans ${(delay/1000).toFixed(1)}s...`,'warn');
+            console.log('[SSE] backoff reconnect in',delay,'ms (attempt',streamReconnects,')');
             pollTimer=setTimeout(()=>{
               if(!scanning||scanDone) return;
               connectStream();
             },delay);
           } else {
-            // Too many reconnects — fall back to polling
-            log('📡 SSE instable — passage en mode polling (toutes les 6s)...','warn');
+            // Too many reconnects — fall back to silent polling
+            console.log('[SSE] switching to poll mode');
             pollUntilDone();
           }
         })
@@ -647,9 +648,12 @@ function startScan() {
         if(!scanning) return;
         if(scanDone){fetchAndRender();return;}
         streamReconnects++;
-        // Don't show error on first hiccup — just silently reconnect
-        if(streamReconnects>1)
-          log('⚠️ Stream interrompu — vérification du statut...','warn');
+        // Silent reconnect — no scary messages in the log
+        console.log('[SSE] reconnect', streamReconnects, '/', MAX_RECONNECTS);
+        // Just update the progress label subtly
+        const lbl=document.getElementById('progress-label');
+        if(lbl) lbl.textContent='🔄 Reconnexion...';
+        setTimeout(()=>{const l=document.getElementById('progress-label');if(l&&scanning)l.textContent='Scan en cours...';},2500);
         checkStatusThenAct();
       };
     }
@@ -787,42 +791,137 @@ function renderResults(res) {
     </div>`;
   } catch(e){console.warn('[render] stats:',e)}
 
-  // ── DB Card ──────────────────────────────────────────────────
+  // ── DB Extraction Card (always shown — success or failure) ──────────────────
   try {
-    const db=res.database||{};
-    if(db.version) {
-      const tables=db.tables||[];
-      const sensitiveWords=['user','admin','password','account','credential','secret','token','auth','passwd','pass','cred'];
-      let credsHTML='';
-      if(db.credentials&&db.credentials.length){
-        credsHTML=`<div style="margin-top:10px">
-          <div style="font-size:0.67rem;color:var(--red);font-weight:700;margin-bottom:5px">🚨 Credentials extraits (${db.credentials.length}):</div>
-          ${db.credentials.slice(0,10).map(cr=>`
-            <div style="background:rgba(255,71,87,0.1);border-left:3px solid var(--red);padding:5px 8px;margin:3px 0;border-radius:4px;font-size:0.68rem;font-family:monospace">
+    const db = res.database || {};
+    const meta = db._scan_meta || {};
+    const injectable = !!db.injectable;
+    const sensitiveWords = ['user','admin','password','account','credential','secret','token','auth','passwd','pass','cred','login'];
+
+    // ── SUCCESS STATE ──
+    if(injectable){
+      const tables   = db.tables   || [];
+      const creds    = db.credentials ? (db.credentials._creds_summary || []) : [];
+      const hashes   = db.credentials ? (db.credentials._hashes        || []) : [];
+      const sysCreds = db.credentials ? (db.credentials._sys_creds     || []) : [];
+      const privs    = (db.info||{}).privileges || (db.info||{}).privs || '';
+      const hasRoot  = /super|dba|root|sysadmin|file/i.test(privs)||/root@/i.test(db.current_user||'');
+      const technique= db.technique||'?';
+      const techLabel= technique==='error'?`Error-based (${db._err_fn||'EXTRACTVALUE'})`
+                      :technique==='union' ?`UNION-based (col ${(db.vis_col||0)+1}/${db.num_cols||'?'})`
+                      :technique==='blind' ?'Boolean Blind (parallel)'
+                      :technique==='time'  ?'Time-based (SLEEP/WAITFOR)'
+                      :technique==='pg_error'?'CAST Error (PostgreSQL)'
+                      :technique==='mssql_error'?'CONVERT Error (MSSQL)'
+                      :technique;
+
+      // Injection vector label
+      const inj_vec = db.inj_is_header
+        ? `Header: ${esc(db.inj_header||'?')} [${esc(db.inj_ctx||'')} / ${esc(db.inj_suffix||'')}]`
+        : `Param: ${esc(db.inj_param||'?')} [${esc(db.inj_method||'GET')} / ${esc(db.inj_ctx||'')}]`;
+
+      // Tables HTML
+      let tablesHTML = '';
+      if(tables.length){
+        tablesHTML = `<div style="margin:8px 0 4px;font-size:0.67rem;color:var(--muted);font-weight:600">TABLES (${tables.length})</div>
+          <div class="db-tables">${tables.map(t=>{
+            const sens = sensitiveWords.some(w=>t.toLowerCase().includes(w));
+            return `<div class="db-table-tag${sens?' sensitive':''}">${esc(t)}${sens?' 🔑':''}</div>`;
+          }).join('')}</div>`;
+      }
+
+      // Credentials HTML
+      let credsHTML = '';
+      const allCreds = [...creds, ...sysCreds.filter(s=>!creds.some(c=>c.username===s.username))];
+      if(allCreds.length){
+        credsHTML = `<div style="margin:10px 0 4px;font-size:0.67rem;color:var(--red);font-weight:700">🚨 CREDENTIALS EXTRAITS (${allCreds.length})</div>
+          ${allCreds.slice(0,15).map(cr=>{
+            const isSys = cr.table && (cr.table.includes('mysql.user')||cr.table.includes('pg_shadow')||cr.table.includes('sql_logins'));
+            return `<div style="background:rgba(255,71,87,${isSys?'0.18':'0.08'});border-left:3px solid var(--red);padding:5px 9px;margin:3px 0;border-radius:4px;font-size:0.68rem;font-family:monospace;word-break:break-all">
+              ${isSys?`<span style="font-size:0.6rem;color:var(--red);opacity:.8;margin-right:4px">[SYS]</span>`:''}
               <span style="color:var(--accent)">${esc(cr.username||cr.user||'?')}</span>
               <span style="color:var(--muted)"> : </span>
-              <span style="color:var(--red)">${esc(cr.password||cr.hash||'?')}</span>
-              ${cr.hash_type?`<span style="color:var(--muted);margin-left:6px">[${esc(cr.hash_type)}]</span>`:''}
-            </div>`).join('')}
-        </div>`;
+              <span style="color:var(--red)">${esc(String(cr.password||cr.hash||'(no password)').slice(0,90))}</span>
+              ${cr.hash_type?`<span style="font-size:0.6rem;color:var(--muted);margin-left:5px;opacity:.8">[${esc(cr.hash_type)}]</span>`:''}
+              ${cr.table?`<span style="font-size:0.58rem;color:var(--muted);opacity:.6;margin-left:5px">${esc(cr.table)}</span>`:''}
+            </div>`;
+          }).join('')}
+          ${allCreds.length>15?`<div style="font-size:0.63rem;color:var(--muted);margin-top:4px">+${allCreds.length-15} autres...</div>`:''}`;
       }
-      c.innerHTML+=`
-        <div class="db-card fade-up">
-          <div class="db-title">🚨 BASE DE DONNÉES EXTRAITE</div>
-          <div class="db-info">
-            <div class="db-field"><div class="db-field-label">Type</div><div class="db-field-value">${esc(db.db_type||'?')}</div></div>
-            <div class="db-field"><div class="db-field-label">Version</div><div class="db-field-value">${esc((db.version||'?').slice(0,25))}</div></div>
-            <div class="db-field"><div class="db-field-label">Utilisateur</div><div class="db-field-value">${esc(db.current_user||'?')}</div></div>
-            <div class="db-field"><div class="db-field-label">Base active</div><div class="db-field-value">${esc(db.current_db||'?')}</div></div>
+
+      c.innerHTML += `
+        <div class="db-card fade-up" style="border-left:3px solid var(--red)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <div class="db-title" style="margin:0">🗄️ DB EXTRACTION</div>
+            <div style="background:var(--red);color:#fff;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:0.5px">✅ RÉUSSIE</div>
+            ${hasRoot?`<div style="background:#ff6b35;color:#fff;font-size:0.58rem;font-weight:700;padding:2px 7px;border-radius:10px;animation:pulse 1.5s infinite">⚠️ ROOT</div>`:''}
           </div>
-          ${tables.length?`<div style="font-size:0.67rem;color:var(--muted);margin-bottom:7px">Tables (${tables.length}):</div>
-            <div class="db-tables">${tables.map(t=>{
-              const sens=sensitiveWords.some(w=>t.toLowerCase().includes(w));
-              return `<div class="db-table-tag ${sens?'sensitive':''}">${esc(t)}${sens?' 🔑':''}</div>`;
-            }).join('')}</div>`:''}
+
+          <div style="font-size:0.63rem;color:var(--muted);margin-bottom:6px;padding:4px 7px;background:rgba(255,255,255,0.03);border-radius:4px;font-family:monospace">
+            🎯 ${inj_vec}
+          </div>
+
+          <div class="db-info">
+            <div class="db-field"><div class="db-field-label">Technique</div><div class="db-field-value" style="color:var(--accent)">${esc(techLabel)}</div></div>
+            <div class="db-field"><div class="db-field-label">DB Type</div><div class="db-field-value">${esc(db.db_type||'?')}</div></div>
+            <div class="db-field"><div class="db-field-label">Version</div><div class="db-field-value">${esc((db.version||'?').slice(0,30))}</div></div>
+            <div class="db-field"><div class="db-field-label">User</div><div class="db-field-value" style="${hasRoot?'color:var(--red);font-weight:700':''}">${esc(db.current_user||'?')}${hasRoot?' ⚠️':''}</div></div>
+            <div class="db-field"><div class="db-field-label">Base active</div><div class="db-field-value">${esc(db.current_db||'?')}</div></div>
+            ${(db.databases||[]).length?`<div class="db-field"><div class="db-field-label">Bases</div><div class="db-field-value">${esc((db.databases||[]).join(', ').slice(0,60))}</div></div>`:''}
+            ${privs?`<div class="db-field"><div class="db-field-label">Privilèges</div><div class="db-field-value" style="color:${hasRoot?'var(--red)':'inherit'}">${esc(privs.slice(0,80))}</div></div>`:''}
+          </div>
+          ${tablesHTML}
           ${credsHTML}
+          ${hashes.length&&!allCreds.length?`<div style="margin-top:8px;font-size:0.65rem;color:var(--orange)">🔑 ${hashes.length} hash(es) extraits — crack avec hashcat/john</div>`:''}
         </div>`;
       document.getElementById('btn-dl-db').classList.remove('hidden');
+
+    // ── FAILURE STATE ──
+    } else {
+      const paramsT = meta.params_tested || [];
+      const headersT = meta.headers_tested || [];
+      const contexts = meta.contexts_tested || 0;
+      const suffixes = meta.suffixes_tested || 0;
+      const vectors  = meta.vectors_total || 0;
+      const techniques = meta.techniques_tried || ['Error-based','UNION','Boolean blind','Time-based'];
+
+      c.innerHTML += `
+        <div class="db-card fade-up" style="border-left:3px solid #444;opacity:0.85">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <div class="db-title" style="margin:0;color:var(--muted)">🗄️ DB EXTRACTION</div>
+            <div style="background:#333;color:#aaa;font-size:0.6rem;font-weight:700;padding:2px 7px;border-radius:10px">❌ NON INJECTABLE</div>
+          </div>
+
+          <div style="font-size:0.65rem;color:var(--muted);margin-bottom:8px">Ce point d'entrée ne semble pas vulnérable à l'injection SQL.</div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:0.63rem;margin-bottom:8px">
+            <div style="background:rgba(255,255,255,0.03);padding:6px 8px;border-radius:5px">
+              <div style="color:var(--muted);margin-bottom:3px;font-size:0.6rem">PARAMÈTRES TESTÉS</div>
+              ${paramsT.length
+                ? paramsT.map(p=>`<div style="font-family:monospace;color:var(--text)">?${esc(p)}=...</div>`).join('')
+                : '<div style="color:#555">Aucun param URL détecté</div>'}
+            </div>
+            <div style="background:rgba(255,255,255,0.03);padding:6px 8px;border-radius:5px">
+              <div style="color:var(--muted);margin-bottom:3px;font-size:0.6rem">HEADERS TESTÉS</div>
+              ${headersT.length
+                ? headersT.slice(0,5).map(h=>`<div style="font-family:monospace;color:var(--text)">${esc(h)}</div>`).join('') + (headersT.length>5?`<div style="color:#555">+${headersT.length-5} autres</div>`:'')
+                : '<div style="color:#555">Désactivé</div>'}
+            </div>
+          </div>
+
+          <div style="font-size:0.63rem;margin-bottom:6px">
+            <span style="color:var(--muted)">Vecteurs testés:</span>
+            <span style="color:var(--text);margin-left:5px">${contexts} contextes × ${suffixes} suffixes${vectors?' = '+vectors+' combinaisons':''}</span>
+          </div>
+
+          <div style="font-size:0.63rem;margin-bottom:4px;color:var(--muted)">TECHNIQUES ESSAYÉES</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${techniques.map(t=>`<div style="background:rgba(255,255,255,0.04);color:#666;font-size:0.6rem;padding:2px 7px;border-radius:10px;border:1px solid #333">✗ ${esc(t)}</div>`).join('')}
+          </div>
+
+          ${meta.error?`<div style="margin-top:6px;font-size:0.6rem;color:var(--orange)">⚠️ ${esc(meta.error.slice(0,100))}</div>`:''}
+          <div style="margin-top:8px;font-size:0.6rem;color:#444;font-style:italic">💡 Essaie avec un paramètre spécifique (ex: ?id=1) ou sur une cible avec des forms POST</div>
+        </div>`;
     }
   } catch(e){console.warn('[render] database:',e)}
 

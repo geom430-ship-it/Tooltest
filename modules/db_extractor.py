@@ -580,6 +580,10 @@ class SQLInjector:
             self._cb("warn", "🗄️ Aucun paramètre URL — test avec id=1")
             params_to_test.append(("GET", "id", "1"))
 
+        # Track what we test (for _scan_meta in full_db_extraction)
+        self._tested_params  = [p for (_, p, _) in params_to_test]
+        self._tested_headers = []
+
         self._cb("info", f"🗄️ Test {len(params_to_test)} paramètre(s) pour SQLi...")
 
         for method, param, orig_val in params_to_test:
@@ -589,6 +593,7 @@ class SQLInjector:
         # Also test HTTP headers if requested or no params found
         if self.test_headers or not params_to_test:
             self._cb("info", "🗄️ Test injection dans les headers HTTP...")
+            self._tested_headers = list(INJECTABLE_HEADERS)
             if self._test_header_injection():
                 return True
 
@@ -1743,10 +1748,38 @@ def full_db_extraction(url, param=None, mode="enum", target_table=None,
     # Step 1: Find injection point
     if not inj.find_injection():
         cb("warn", "🗄️ Aucune injection SQL détectée")
+        results["_scan_meta"] = {
+            "params_tested":    getattr(inj, "_tested_params",  []),
+            "headers_tested":   getattr(inj, "_tested_headers", []),
+            "contexts_tested":  len(SQLInjector.CONTEXTS),
+            "suffixes_tested":  len(SQLInjector.SUFFIXES),
+            "vectors_total":    len(getattr(inj, "_tested_params", [])) * len(SQLInjector.CONTEXTS) * len(SQLInjector.SUFFIXES),
+            "json_tested":      bool(post_data),
+            "techniques_tried": ["error-based (EXTRACTVALUE/UPDATEXML)", "UNION SELECT", "Boolean blind", "Time-based (SLEEP)"],
+        }
         return results
 
-    results["injectable"] = True
-    results["db_type"]    = inj.db_type
+    # Store meta for successful injection too
+    results["_scan_meta"] = {
+        "params_tested":   getattr(inj, "_tested_params",  []),
+        "headers_tested":  getattr(inj, "_tested_headers", []),
+        "contexts_tested": len(SQLInjector.CONTEXTS),
+        "suffixes_tested": len(SQLInjector.SUFFIXES),
+        "vectors_total":   len(getattr(inj, "_tested_params", [])) * len(SQLInjector.CONTEXTS) * len(SQLInjector.SUFFIXES),
+    }
+
+    results["injectable"]     = True
+    results["db_type"]        = inj.db_type
+    # Expose injection context for the frontend "how it worked" display
+    results["inj_param"]      = inj.inj_param
+    results["inj_header"]     = inj.inj_header
+    results["inj_method"]     = inj.inj_method
+    results["inj_ctx"]        = inj.inj_ctx
+    results["inj_suffix"]     = inj.inj_suffix
+    results["inj_is_header"]  = inj.inj_is_header
+    results["vis_col"]        = inj.vis_col
+    results["num_cols"]       = inj.num_cols
+    results["_err_fn"]        = getattr(inj, "_err_fn", "EXTRACTVALUE")
     results["vulnerabilities"].append({
         "type": "sql_injection", "severity": "critical",
         "name": f"SQL Injection ({inj.inj_method}) — param: '{inj.inj_param or inj.inj_header}'",
