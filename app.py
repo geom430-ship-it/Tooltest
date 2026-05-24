@@ -1,7 +1,7 @@
 """
-UHQKYRA v3.0 - Web-Based Penetration Testing Tool
+UHQKYRA v4.3 - Web-Based Penetration Testing Tool
 Flask backend with real-time streaming via SSE
-IMPORTANT: For authorized security testing only
+⚠️  AUTHORIZED SECURITY TESTING ONLY — UHQKYRA
 """
 
 from flask import Flask, render_template, request, jsonify, Response, send_file
@@ -691,7 +691,7 @@ def full_auto_scan(url, scan_id, callback):
         results["ip"] = "N/A"
 
     callback({"type": "info", "message": f"🎯 Cible : {domain} ({results['ip']})"})
-    callback({"type": "info", "message": f"🚀 UHQKYRA v4.1 — Scan complet ({TOTAL_STEPS} étapes, 22 modules)..."})
+    callback({"type": "info", "message": f"🚀 UHQKYRA v4.3 — Scan complet ({TOTAL_STEPS} étapes, 26 modules)..."})
     callback({"type": "progress", "step": 0, "total": TOTAL_STEPS, "label": "Démarrage..."})
 
     # ── STEP 1 : WHOIS + GeoIP ──────────────────────────────
@@ -1288,7 +1288,7 @@ def download_txt(scan_id):
 
     lines = []
     lines.append("=" * 65)
-    lines.append(f"  UHQKYRA v4.1 — RAPPORT D'AUDIT DE SÉCURITÉ (22 modules)")
+    lines.append(f"  UHQKYRA v4.3 — RAPPORT D'AUDIT DE SÉCURITÉ (26 modules)")
     lines.append("=" * 65)
     lines.append(f"Cible     : {res['url']}")
     lines.append(f"Domaine   : {res['domain']}")
@@ -1561,7 +1561,7 @@ def download_txt(scan_id):
 
     lines.append("=" * 65)
     lines.append("  ⚠️  RAPPORT CONFIDENTIEL — USAGE AUTORISÉ UNIQUEMENT")
-    lines.append(f"  Généré par UHQKYRA v4.1 (25 modules) — {res['scan_time']}")
+    lines.append(f"  Généré par UHQKYRA v4.3 (26 modules) — {res['scan_time']}")
     lines.append("=" * 65)
 
     content = "\n".join(lines)
@@ -1720,19 +1720,20 @@ def api_api_discover():
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description='UHQKYRA v3.0')
+    parser = argparse.ArgumentParser(description='UHQKYRA v4.3')
     parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', 5000)), help='Port (default: 5000)')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host (default: 0.0.0.0)')
     args = parser.parse_args()
 
     os.makedirs('reports', exist_ok=True)
     print(f"""
-╔═══════════════════════════════════════════════╗
-║       UHQKYRA v3.0 - Web Security Tool      ║
-║  ⚠️  For authorized security testing only!     ║
-╠═══════════════════════════════════════════════╣
-║  🌐 Interface: http://127.0.0.1:{args.port:<14}║
-║  📡 12 modules: WAF·CMS·JS·Email·API+more    ║
-╚═══════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════╗
+║          UHQKYRA v4.3 — Web Security Tool       ║
+║   ⚠️  Authorized security testing only — UHQKYRA ║
+╠══════════════════════════════════════════════════╣
+║  🌐 Interface : http://127.0.0.1:{args.port:<16}║
+║  📡 26 modules · 21 étapes · Stealth engine     ║
+║  🛡️  SQLi · Bruteforce · WAF bypass · OSINT     ║
+╚══════════════════════════════════════════════════╝
     """)
     app.run(debug=False, host=args.host, port=args.port, threaded=True)
